@@ -1,0 +1,11 @@
+{
+  "name": "recipe-box",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Recipe manager and grocery list that stay in sync, in the style of Paprika and Deglaze.",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test test/*.test.js"
+  }
+}
