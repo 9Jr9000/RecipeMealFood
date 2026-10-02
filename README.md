@@ -12,6 +12,10 @@ It ships with no recipes and never suggests any. Everything you see is something
 - **Amount pickers**: amounts are entered as a number box + fraction dropdown (1/16 to ¾) + unit dropdown (tsp, tbsp, cup, oz, lb, g, ml…) for recipe ingredients, grocery items and pantry items. A **+** next to the amount adds a second measurement when a recipe needs one (e.g. ⅔ cup + ¼ tbsp); pasted text like `1 cup plus 2 tbsp flour` is understood too. Servings, prep/cook times and categories are dropdowns.
 - **Unit conversion**: on a recipe, tap any measured amount to see it in cups, ounces, grams, tablespoons, teaspoons or milliliters, or use *Show amounts in* to switch them all. Conversions follow the kitchen chart 1 c = 8 oz = 229 g = 16 tbsp = 48 tsp = 240 ml (grams are a water-weight approximation).
 
+## Look
+
+A Y2K "console chrome" theme: brushed-periwinkle beveled panels, a carbon navigation layer with a halftone dot texture and gold menu words, circuit-board banners tinted per section, outlined box-art headings, and warm color reserved for actions (amber for tools, orange for forward/save). Arial throughout (Arimo / Archivo Black from Google Fonts where Arial isn't installed) with a pixel font for small labels.
+
 ## How the sync works
 
 - Each ingredient on a recipe shows whether it is **in your pantry**, **not enough** (the pantry has less than the recipe needs), **on your grocery list**, or **needed**.

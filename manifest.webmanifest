@@ -5,8 +5,8 @@
   "start_url": "./#/recipes",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f7f4ef",
-  "theme_color": "#c8412d",
+  "background_color": "#7a8aba",
+  "theme_color": "#21242e",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },

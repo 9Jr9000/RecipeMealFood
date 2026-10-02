@@ -5,27 +5,33 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Recipe Box</title>
   <meta name="description" content="Your recipes and a grocery list that knows what you already have.">
-  <meta name="theme-color" content="#c8412d">
+  <meta name="theme-color" content="#21242e">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="Recipe Box">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Arimo/Archivo Black stand in for Arial/Arial Black where those aren't installed; Silkscreen for pixel labels -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Arimo:wght@400;700&family=Silkscreen&display=swap">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
   <div class="app">
     <nav class="sidebar" aria-label="Main">
       <div class="brand">
-        <img src="icons/icon.svg" alt="" width="28" height="28">
-        <span>Recipe Box</span>
+        <span class="logo-pill"><img src="icons/icon.svg" alt="">Recipe Box</span>
       </div>
       <div class="nav-links" id="side-links"></div>
       <div class="side-categories" id="side-categories"></div>
     </nav>
-    <main id="view" tabindex="-1"></main>
+    <div class="main-col">
+      <header class="masthead"><span class="logo-pill"><img src="icons/icon.svg" alt="">Recipe Box</span></header>
+      <main id="view" tabindex="-1"></main>
+    </div>
     <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
   </div>
 

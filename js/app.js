@@ -11,7 +11,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '4';
+const APP_VERSION = '5';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -246,6 +246,7 @@ function render() {
   // The editor keeps its own form state; don't wipe it on background re-renders.
   if ((r.name === 'edit' || r.name === 'new') && $view.dataset.view === `${r.name}/${r.id}`) return;
   $view.dataset.view = `${r.name}/${r.id}`;
+  $view.dataset.section = views[r.name] ? r.name : 'recipes'; // picks the hero tint
   (views[r.name] || viewRecipes)();
   if (ui.focusAfterRender) {
     const el = document.getElementById(ui.focusAfterRender);
