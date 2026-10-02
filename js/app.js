@@ -10,6 +10,9 @@ import {
   removeFromPantry, groceryInPantry, setAisle, renameGroceryItem, amountText, allCategories, findPantry,
 } from './sync.js';
 
+// Shown in Settings so it's easy to tell which version is running.
+const APP_VERSION = '3';
+
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
 const I = {
@@ -683,6 +686,10 @@ function viewSettings() {
         <p>When you add a recipe to the list, anything already in your pantry or already on the list is unchecked, so you only add what you need. If your pantry has an amount and the recipe needs more, only the difference is added. The same ingredient from different recipes is combined into one item. Checked-off items move to your pantry when you tap “Move to Pantry”, and removing a recipe from the list takes its ingredients with it.</p>
       </div>
       <div class="settings-card">
+        <h2>App Version</h2>
+        <p>Version ${APP_VERSION}. Updates load automatically when you open the app.</p>
+      </div>
+      <div class="settings-card">
         <h2>Erase Everything</h2>
         <p>Delete all recipes, photos, the grocery list and the pantry from this device.</p>
         <button class="btn danger" data-action="erase">Erase All Data</button>
@@ -1195,7 +1202,20 @@ async function start() {
   render();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // When an update takes over, reload once so the new version shows right away.
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded) return;
+      reloaded = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js').then(reg => {
+      // Check for updates whenever the app comes back to the foreground.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {});
+      });
+    }).catch(() => {});
   }
 }
 
