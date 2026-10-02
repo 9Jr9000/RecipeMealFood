@@ -50,8 +50,14 @@ for (const [canon, spellings] of Object.entries(UNIT_ALIASES)) {
 }
 
 // Convertible units, expressed in a base unit per dimension.
-const VOLUME_TSP = { tsp: 1, tbsp: 3, 'fl oz': 6, cup: 48, pt: 96, qt: 192, gal: 768, ml: 0.202884, l: 202.884 };
+// Volume units in teaspoons, matching the kitchen chart:
+// 1 c = 8 oz = 16 tbsp = 48 tsp = 240 ml.
+const VOLUME_TSP = { tsp: 1, tbsp: 3, 'fl oz': 6, cup: 48, pt: 96, qt: 192, gal: 768, ml: 0.2, l: 200 };
 const WEIGHT_G = { g: 1, kg: 1000, oz: 28.3495, lb: 453.592 };
+
+// Unit conversion used by the "convert to" dropdowns, from the same chart:
+// 1 c = 8 oz = 229 g = 16 tbsp = 48 tsp = 240 ml (weights are the water-based kitchen approximation).
+const CONVERT_TSP = { ...VOLUME_TSP, oz: 6, lb: 96, g: 48 / 229, kg: 48000 / 229 };
 
 const PREP_WORDS = [
   'chopped', 'finely', 'roughly', 'coarsely', 'thinly', 'minced', 'diced', 'sliced', 'grated',
@@ -216,7 +222,7 @@ export function parseIngredients(text) {
 // ---------- Quantity formatting & math ----------
 
 const NICE_FRACTIONS = [
-  [1 / 8, '⅛'], [1 / 4, '¼'], [1 / 3, '⅓'], [3 / 8, '⅜'], [1 / 2, '½'],
+  [1 / 16, '1/16'], [1 / 8, '⅛'], [1 / 4, '¼'], [1 / 3, '⅓'], [3 / 8, '⅜'], [1 / 2, '½'],
   [5 / 8, '⅝'], [2 / 3, '⅔'], [3 / 4, '¾'], [7 / 8, '⅞'],
 ];
 
@@ -224,10 +230,10 @@ export function formatQty(n) {
   if (n === null || n === undefined || Number.isNaN(n)) return '';
   const whole = Math.floor(n + 1e-9);
   const frac = n - whole;
-  if (frac < 0.04) return String(whole);
-  if (frac > 0.96) return String(whole + 1);
+  if (frac < 0.03) return String(whole);
+  if (frac > 0.97) return String(whole + 1);
   for (const [v, glyph] of NICE_FRACTIONS) {
-    if (Math.abs(frac - v) < 0.04) return whole ? `${whole}${glyph}` : glyph;
+    if (Math.abs(frac - v) < 0.03) return whole ? `${whole}${glyph.includes('/') ? ' ' : ''}${glyph}` : glyph;
   }
   return String(Math.round(n * 100) / 100);
 }
@@ -389,4 +395,81 @@ export function parseRecipeText(text) {
 export function servingsNumber(servings) {
   const m = String(servings || '').match(/(\d+(?:\.\d+)?)/);
   return m ? Number(m[1]) : null;
+}
+
+// ---------- Dropdown options & conversion ----------
+
+// Units offered in the unit dropdowns, grouped for <optgroup>.
+export const UNIT_GROUPS = [
+  ['Measuring', [['tsp', 'teaspoon (tsp)'], ['tbsp', 'tablespoon (tbsp)'], ['cup', 'cup (c)'], ['fl oz', 'fluid ounce (fl oz)'], ['ml', 'milliliter (ml)'], ['l', 'liter (l)'], ['pt', 'pint (pt)'], ['qt', 'quart (qt)'], ['gal', 'gallon (gal)']]],
+  ['Weight', [['oz', 'ounce (oz)'], ['lb', 'pound (lb)'], ['g', 'gram (g)'], ['kg', 'kilogram (kg)']]],
+  ['Count', [['pinch', 'pinch'], ['dash', 'dash'], ['clove', 'clove'], ['slice', 'slice'], ['piece', 'piece'], ['stick', 'stick'], ['can', 'can'], ['jar', 'jar'], ['bottle', 'bottle'], ['package', 'package'], ['bag', 'bag'], ['box', 'box'], ['bunch', 'bunch'], ['head', 'head'], ['stalk', 'stalk'], ['sprig', 'sprig'], ['handful', 'handful']]],
+];
+export const UNIT_VALUES = UNIT_GROUPS.flatMap(([, units]) => units.map(([v]) => v));
+
+// Whole-number choices; fractions are picked separately.
+export const WHOLE_OPTIONS = [
+  ...Array.from({ length: 20 }, (_, i) => i + 1),
+  24, 25, 30, 32, 36, 40, 48, 50, 60, 64, 75, 80, 100, 120, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 750, 800, 900, 1000,
+];
+export const FRACTION_OPTIONS = [
+  ['1/16', 1 / 16], ['⅛', 1 / 8], ['¼', 1 / 4], ['⅓', 1 / 3], ['½', 1 / 2], ['⅔', 2 / 3], ['¾', 3 / 4],
+];
+
+// Splits 1.5 into { whole: 1, frac: '½' } for prefilling the dropdowns.
+// Returns null when the amount can't be shown exactly with the dropdowns.
+export function splitQty(qty) {
+  if (qty === null || qty === undefined || Number.isNaN(qty)) return { whole: '', frac: '' };
+  let whole = Math.floor(qty + 1e-9);
+  const rest = qty - whole;
+  let frac = '';
+  if (rest > 0.01) {
+    const hit = FRACTION_OPTIONS.find(([, v]) => Math.abs(v - rest) < 0.02);
+    if (hit) frac = hit[0];
+    else if (rest > 0.97) whole += 1;
+    else return null;
+  }
+  if (whole && !WHOLE_OPTIONS.includes(whole)) return null;
+  return { whole: whole || '', frac };
+}
+
+export function joinQty(whole, frac) {
+  const w = Number(whole) || 0;
+  const f = (FRACTION_OPTIONS.find(([label]) => label === frac) || [, 0])[1];
+  return w + f > 0 ? w + f : null;
+}
+
+export function isConvertible(unit) {
+  return !!unit && unit in CONVERT_TSP;
+}
+
+// Units an amount can be shown in, using the kitchen chart.
+export const CONVERT_TARGETS = ['cup', 'oz', 'g', 'tbsp', 'tsp', 'ml', 'lb', 'kg', 'l'];
+
+// Converts between chart units; returns null when the units aren't convertible.
+export function convertAmount(qty, from, to) {
+  if (qty === null || qty === undefined || !isConvertible(from) || !isConvertible(to)) return null;
+  const value = (qty * CONVERT_TSP[from]) / CONVERT_TSP[to];
+  // Grams and milliliters read best as whole numbers.
+  if ((to === 'g' || to === 'ml') && value >= 5) return Math.round(value);
+  return value;
+}
+
+// Converts `have` into `unit` for comparing amounts; same unit always works.
+export function amountIn(qty, from, to) {
+  if (qty === null || qty === undefined) return null;
+  if ((from || null) === (to || null)) return qty;
+  const d1 = dimensionOf(from), d2 = dimensionOf(to);
+  if (d1 && d1 === d2) {
+    const table = d1 === 'volume' ? VOLUME_TSP : WEIGHT_G;
+    return (qty * table[from]) / table[to];
+  }
+  if (!isConvertible(from) || !isConvertible(to)) return null;
+  return (qty * CONVERT_TSP[from]) / CONVERT_TSP[to];
+}
+
+// Turns dropdown values back into a recipe ingredient line ("1½ cup flour").
+export function buildLine({ qty = null, qtyMax = null, unit = null, name = '' }) {
+  const amount = qty !== null ? formatAmount(qty, qtyMax, unit) : unit || '';
+  return `${amount} ${String(name).trim()}`.trim();
 }

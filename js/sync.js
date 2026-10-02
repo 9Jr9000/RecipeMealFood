@@ -5,11 +5,13 @@
 //   recipes: [{ id, name, ingredients, directions, notes, servings, prepTime, cookTime,
 //               source, categories: [], rating, photo, created, updated }],
 //   grocery: [{ id, key, name, aisle, checked, note, parts: [{ recipeId, recipeName, qty, unit }] }],
-//   pantry:  [{ id, key, name, aisle, added }],
+//   pantry:  [{ id, key, name, aisle, qty, unit, added }],  // qty null = have it, amount unknown
 //   aisleOverrides: { [key]: aisle },   // aisles the user picked, remembered per item
 // }
 
-import { parseIngredient, parseIngredients, normalizeName, guessAisle, describeAmounts } from './ingredients.js';
+import {
+  parseIngredient, parseIngredients, normalizeName, guessAisle, describeAmounts, combineAmounts, amountIn,
+} from './ingredients.js';
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -59,10 +61,28 @@ export function findGrocery(state, key, { includeChecked = false } = {}) {
   return state.grocery.find(g => keysMatch(g.key, key) && (includeChecked || !g.checked)) || null;
 }
 
-// What the app knows about an ingredient: already have it, already on the list, or need it.
-export function ingredientStatus(state, key) {
+// How much more of `need` ({ qty, unit }) is required beyond what the pantry item holds.
+// 0 = the pantry has enough. Amounts that can't be compared count as enough.
+export function pantryShortfall(pantryItem, need) {
+  if (!pantryItem || !need || need.qty === null || need.qty === undefined) return 0;
+  if (pantryItem.qty === null || pantryItem.qty === undefined) return 0;
+  const have = amountIn(pantryItem.qty, pantryItem.unit || null, need.unit || null);
+  if (have === null) return 0;
+  const short = need.qty - have;
+  return short > need.qty * 0.02 ? short : 0;
+}
+
+// What the app knows about an ingredient: have it, have some but not enough ('low'),
+// already on the list, checked off on the list, or need it.
+export function ingredientStatus(state, key, need = null) {
   if (!key) return 'need';
-  if (findPantry(state, key)) return 'pantry';
+  const pantry = findPantry(state, key);
+  if (pantry) {
+    if (!pantryShortfall(pantry, need)) return 'pantry';
+    const g = findGrocery(state, key, { includeChecked: true });
+    if (g) return g.checked ? 'bought' : 'list';
+    return 'low';
+  }
   const g = findGrocery(state, key, { includeChecked: true });
   if (g) return g.checked ? 'bought' : 'list';
   return 'need';
@@ -92,11 +112,18 @@ export function addToGrocery(state, { key, name, qty = null, unit = null, recipe
   return item;
 }
 
-// Adds a typed-in item ("2 lbs chicken thighs", "milk").
-export function addManualItem(state, text) {
+// Adds a typed-in item ("2 lbs chicken thighs", "milk"). An amount picked from the
+// dropdowns ({ qty, unit }) takes priority over one typed into the name.
+export function addManualItem(state, text, amount = null) {
   const parsed = parseIngredient(text);
   if (!parsed || parsed.header || !parsed.key) return null;
-  return addToGrocery(state, { key: parsed.key, name: parsed.name, qty: parsed.qty, unit: parsed.unit });
+  const useAmount = amount && (amount.qty !== null || amount.unit);
+  return addToGrocery(state, {
+    key: useAmount ? normalizeName(text) || parsed.key : parsed.key,
+    name: useAmount ? text : parsed.name,
+    qty: useAmount ? amount.qty : parsed.qty,
+    unit: useAmount ? amount.unit || null : parsed.unit,
+  });
 }
 
 // Ingredients of a recipe, with what the app knows about each one.
@@ -105,17 +132,21 @@ export function recipeListPlan(state, recipe, factor = 1) {
   return parseIngredients(recipe.ingredients)
     .map((p, index) => {
       if (p.header) return { index, parsed: p, header: true };
-      const status = ingredientStatus(state, p.key);
+      const qty = p.qty !== null ? p.qty * factor : null;
+      const status = ingredientStatus(state, p.key, { qty, unit: p.unit });
       // On the list only for other recipes -> you still need this recipe's amount too.
       const listed = status === 'list' ? findGrocery(state, p.key) : null;
       const alreadyAdded = !!listed && listed.parts.some(part => part.recipeId === recipe.id);
+      // Some in the pantry but not enough -> only add the difference.
+      const shortfall = status === 'low' ? pantryShortfall(findPantry(state, p.key), { qty, unit: p.unit }) : null;
       return {
         index,
         parsed: p,
         status,
         alreadyAdded,
-        qty: p.qty !== null ? p.qty * factor : null,
-        selected: status === 'need' || (status === 'list' && !alreadyAdded),
+        qty: shortfall || qty,
+        shortfall,
+        selected: status === 'need' || status === 'low' || (status === 'list' && !alreadyAdded),
       };
     });
 }
@@ -162,20 +193,38 @@ export function setChecked(state, itemId, checked) {
   return item;
 }
 
-export function addToPantry(state, name, aisle) {
+// Adds to the pantry, or tops up the amount of an item that's already there.
+export function addToPantry(state, name, aisle, { qty = null, unit = null } = {}) {
   const key = normalizeName(name);
   if (!key) return null;
   const existing = findPantry(state, key);
-  if (existing) return existing;
-  const item = { id: uid(), key, name: displayName(key), aisle: aisle || aisleFor(state, key, name), added: Date.now() };
+  if (existing) {
+    // An unknown amount means "have it"; only known amounts can be added up.
+    if (existing.qty !== null && existing.qty !== undefined && qty !== null) {
+      const more = amountIn(qty, unit, existing.unit || null);
+      existing.qty = more === null ? null : existing.qty + more;
+    } else if (existing.qty !== null && existing.qty !== undefined) {
+      existing.qty = null;
+      existing.unit = null;
+    }
+    return existing;
+  }
+  const item = {
+    id: uid(), key, name: displayName(key), aisle: aisle || aisleFor(state, key, name),
+    qty, unit: unit || null, added: Date.now(),
+  };
   state.pantry.push(item);
   return item;
 }
 
-// Checked-off groceries were bought, so they move into the pantry.
+// Checked-off groceries were bought, so they move into the pantry with what was bought.
 export function clearChecked(state) {
   const bought = state.grocery.filter(g => g.checked);
-  for (const g of bought) addToPantry(state, g.name, g.aisle);
+  for (const g of bought) {
+    const amounts = combineAmounts(g.parts).filter(a => a.qty !== null);
+    const amount = amounts.length === 1 ? amounts[0] : {};
+    addToPantry(state, g.name, g.aisle, amount);
+  }
   state.grocery = state.grocery.filter(g => !g.checked);
   return bought.length;
 }
@@ -187,8 +236,13 @@ export function removeFromPantry(state, id) {
 }
 
 // Grocery items that are also in the pantry (e.g. added to the pantry after the list was made).
+// Pantry items with a known amount are left alone: the list may be topping them up.
 export function groceryInPantry(state) {
-  return state.grocery.filter(g => !g.checked && findPantry(state, g.key));
+  return state.grocery.filter(g => {
+    if (g.checked) return false;
+    const p = findPantry(state, g.key);
+    return !!p && (p.qty === null || p.qty === undefined);
+  });
 }
 
 export function setAisle(state, key, aisle) {

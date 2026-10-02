@@ -1,11 +1,13 @@
 import * as db from './db.js';
 import {
-  parseIngredients, formatAmount, parseRecipeText, servingsNumber, AISLES, normalizeName,
+  parseIngredient, parseIngredients, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
+  normalizeName, UNIT_GROUPS, UNIT_VALUES, WHOLE_OPTIONS, FRACTION_OPTIONS, splitQty, joinQty,
+  isConvertible, convertAmount, CONVERT_TARGETS, buildLine, combineAmounts,
 } from './ingredients.js';
 import {
   emptyState, uid, saveRecipe, deleteRecipe, recipeListPlan, addRecipeToGrocery, addManualItem,
   ingredientStatus, setChecked, clearChecked, recipesOnList, removeRecipeFromGrocery, addToPantry,
-  removeFromPantry, groceryInPantry, setAisle, renameGroceryItem, amountText, allCategories,
+  removeFromPantry, groceryInPantry, setAisle, renameGroceryItem, amountText, allCategories, findPantry,
 } from './sync.js';
 
 // ---------- Icons ----------
@@ -42,6 +44,7 @@ const ui = {
   scale: {}, // recipeId -> factor
   crossed: {}, // recipeId -> Set of ingredient indexes
   step: {}, // recipeId -> active step index
+  convert: {}, // recipeId -> { all: unit, lines: { index: unit } } for the unit dropdowns
   focusAfterRender: null,
 };
 
@@ -102,6 +105,48 @@ function safeUrl(u) {
     return /^https?:$/.test(url.protocol) ? url.href : null;
   } catch { return null; }
 }
+
+// ---------- Dropdowns ----------
+const SERVING_OPTIONS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '12', '14', '16', '18', '20', '24', '30', '36', '48'];
+const TIME_OPTIONS = [
+  '5 min', '10 min', '15 min', '20 min', '25 min', '30 min', '35 min', '40 min', '45 min', '50 min', '55 min',
+  '1 hr', '1 hr 15 min', '1 hr 30 min', '1 hr 45 min', '2 hr', '2 hr 30 min', '3 hr', '3 hr 30 min',
+  '4 hr', '5 hr', '6 hr', '8 hr', '10 hr', '12 hr', '24 hr',
+];
+const CONVERT_LABELS = { cup: 'Cups', oz: 'Ounces', g: 'Grams', tbsp: 'Tablespoons', tsp: 'Teaspoons', ml: 'Milliliters', lb: 'Pounds', kg: 'Kilograms', l: 'Liters' };
+
+function choiceSelect(name, current, options, blank) {
+  const list = current && !options.includes(current) ? [current, ...options] : options;
+  return `<select name="${name}"><option value="">${esc(blank)}</option>${list.map(o => `<option ${o === current ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+}
+
+function unitOptions(current) {
+  const extra = current && !UNIT_VALUES.includes(current) ? `<option selected>${esc(current)}</option>` : '';
+  return `<option value="">Unit</option>${extra}${UNIT_GROUPS.map(([group, units]) => `<optgroup label="${group}">${units
+    .map(([v, label]) => `<option value="${esc(v)}" title="${esc(label)}" ${v === current ? 'selected' : ''}>${esc(v)}</option>`).join('')}</optgroup>`).join('')}`;
+}
+
+// Three dropdowns: whole number, fraction, unit. Names are prefixed so a form can hold several.
+function amountPicker(prefix, qty = null, unit = null) {
+  let split = splitQty(qty);
+  let custom = '';
+  if (!split) {
+    // An amount the dropdowns can't express exactly (e.g. 2.37) is kept as its own choice.
+    split = { whole: '', frac: '' };
+    custom = `<option value="${qty}" selected>${esc(formatQty(qty))}</option>`;
+  }
+  return `<span class="amount-picker">
+    <select name="${prefix}whole" aria-label="Amount"><option value="">Qty</option>${custom}${WHOLE_OPTIONS.map(n => `<option ${n === split.whole ? 'selected' : ''}>${n}</option>`).join('')}</select>
+    <select name="${prefix}frac" aria-label="Fraction"><option value="">–</option>${FRACTION_OPTIONS.map(([f]) => `<option ${f === split.frac ? 'selected' : ''}>${f}</option>`).join('')}</select>
+    <select name="${prefix}unit" aria-label="Unit">${unitOptions(unit)}</select>
+  </span>`;
+}
+
+function readAmount(root, prefix) {
+  const get = n => root.querySelector(`[name="${prefix}${n}"]`)?.value || '';
+  return { qty: joinQty(get('whole'), get('frac')), unit: get('unit') || null };
+}
+function hasAmount(a) { return a.qty !== null || !!a.unit; }
 
 let toastTimer;
 function toast(message, action) {
@@ -252,21 +297,44 @@ function viewRecipe(id) {
   const ingredients = parseIngredients(r.ingredients);
   const steps = String(r.directions || '').split(/\n\s*\n|\n/).map(s => s.trim()).filter(Boolean);
   const baseServings = servingsNumber(r.servings);
-  const counts = { pantry: 0, list: 0, bought: 0, need: 0 };
+  const counts = { pantry: 0, list: 0, bought: 0, need: 0, low: 0 };
+  const conv = ui.convert[id] || { all: '', lines: {} };
+  const anyConvertible = ingredients.some(p => p.qty !== null && isConvertible(p.unit));
 
   const ingHtml = ingredients.map((p, i) => {
     if (p.header) return `<li class="header">${esc(p.header)}</li>`;
-    const status = ingredientStatus(state, p.key);
+    const qty = p.qty !== null ? p.qty * factor : null;
+    const max = p.qtyMax !== null ? p.qtyMax * factor : null;
+    const status = ingredientStatus(state, p.key, { qty, unit: p.unit });
     counts[status]++;
     let text;
-    if (p.qty !== null) {
-      const amount = formatAmount(p.qty * factor, p.qtyMax !== null ? p.qtyMax * factor : null, p.unit);
-      text = `<span class="amt">${esc(amount)}</span> ${esc(p.name)}`;
+    if (qty !== null && isConvertible(p.unit)) {
+      // The amount itself is a dropdown listing it in every unit from the kitchen chart.
+      // "Show amounts in" skips lines that would become awkward decimals (½ tsp -> 0.17 tbsp).
+      const allFits = conv.all && convertAmount(qty, p.unit, conv.all) >= 1 / 16 && !formatQty(convertAmount(qty, p.unit, conv.all)).includes('.');
+      const target = conv.lines[i] || (allFits ? conv.all : p.unit);
+      const options = [p.unit, ...CONVERT_TARGETS.filter(u => u !== p.unit)]
+        // Skip units where the amount would round to nothing (e.g. "0 kg" of salt).
+        .filter(u => u === p.unit || u === target || convertAmount(qty, p.unit, u) >= 1 / 16)
+        .map(u => {
+          const label = formatAmount(convertAmount(qty, p.unit, u), max !== null ? convertAmount(max, p.unit, u) : null, u);
+          return `<option value="${esc(u)}" ${u === target ? 'selected' : ''}>${esc(label)}</option>`;
+        }).join('');
+      text = `<select class="convert" data-i="${i}" aria-label="Change unit">${options}</select> ${esc(p.name)}`;
+    } else if (qty !== null) {
+      text = `<span class="amt">${esc(formatAmount(qty, max, p.unit))}</span> ${esc(p.name)}`;
     } else {
       text = esc(p.raw);
     }
-    const title = { pantry: 'In your pantry', list: 'On your grocery list', bought: 'Checked off on your grocery list', need: 'Not in your pantry' }[status];
-    const icon = status === 'list' ? I.cart : status === 'need' ? '' : I.check;
+    const pantry = status === 'low' ? findPantry(state, p.key) : null;
+    const title = {
+      pantry: 'In your pantry',
+      low: pantry ? `You have ${formatAmount(pantry.qty, null, pantry.unit)} — not enough` : 'Not enough in your pantry',
+      list: 'On your grocery list',
+      bought: 'Checked off on your grocery list',
+      need: 'Not in your pantry',
+    }[status];
+    const icon = status === 'list' ? I.cart : status === 'need' ? '' : status === 'low' ? '!' : I.check;
     return `<li class="${crossed.has(i) ? 'crossed' : ''}" data-action="cross-ingredient" data-i="${i}">
       <span class="status-dot ${status}" title="${title}">${icon}</span><span class="txt">${text}</span></li>`;
   }).join('');
@@ -316,11 +384,15 @@ function viewRecipe(id) {
           <div class="have-summary">
             ${counts.pantry + counts.bought ? `<span class="pill pantry">${I.check} Have ${counts.pantry + counts.bought}</span>` : ''}
             ${counts.list ? `<span class="pill list">${I.cart} On list ${counts.list}</span>` : ''}
+            ${counts.low ? `<span class="pill low">Not enough ${counts.low}</span>` : ''}
             ${counts.need ? `<span class="pill need">Need ${counts.need}</span>` : ''}
           </div>
+          ${anyConvertible ? `<label class="convert-all">Show amounts in
+            <select id="convert-all"><option value="">As written</option>${CONVERT_TARGETS.map(u => `<option value="${u}" ${conv.all === u ? 'selected' : ''}>${CONVERT_LABELS[u]}</option>`).join('')}</select></label>` : ''}
           <ul class="ing-list">${ingHtml}</ul>
           <div class="legend">
             <span><span class="status-dot pantry">${I.check}</span>In pantry</span>
+            <span><span class="status-dot low">!</span>Not enough</span>
             <span><span class="status-dot list">${I.cart}</span>On grocery list</span>
             <span><span class="status-dot need"></span>Need to buy</span>
           </div>` : '<p class="fact">No ingredients yet.</p>'}
@@ -365,25 +437,72 @@ function viewEditor(id) {
         </div>
       </div>
       <div class="field"><span>Rating</span><div class="star-input" id="star-input">${starButtons(editorRating)}</div></div>
-      <label class="field"><span>Categories</span>
-        <input name="categories" list="cat-list" value="${esc((r?.categories || []).join(', '))}" placeholder="e.g. Dinner, Chicken">
-        <datalist id="cat-list">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
-        <div class="hint">Separate with commas.</div></label>
+      <div class="field"><span>Categories</span>
+        ${cats.length ? `<div class="cat-picks">${cats.map(c => `<label class="chip check-chip"><input type="checkbox" name="cat" value="${esc(c)}" ${(r?.categories || []).includes(c) ? 'checked' : ''}>${esc(c)}</label>`).join('')}</div>` : ''}
+        <input class="input" name="newcats" placeholder="${cats.length ? 'Add a new category' : 'e.g. Dinner, Chicken'}">
+        <div class="hint">${cats.length ? 'Tap to pick. ' : ''}Separate new categories with commas.</div></div>
       <div class="row-fields">
-        <label class="field"><span>Servings</span><input name="servings" value="${esc(r?.servings)}" placeholder="4"></label>
-        <label class="field"><span>Prep time</span><input name="prepTime" value="${esc(r?.prepTime)}" placeholder="15 min"></label>
-        <label class="field"><span>Cook time</span><input name="cookTime" value="${esc(r?.cookTime)}" placeholder="30 min"></label>
+        <label class="field"><span>Servings</span>${choiceSelect('servings', r?.servings || '', SERVING_OPTIONS, '—')}</label>
+        <label class="field"><span>Prep time</span>${choiceSelect('prepTime', r?.prepTime || '', TIME_OPTIONS, '—')}</label>
+        <label class="field"><span>Cook time</span>${choiceSelect('cookTime', r?.cookTime || '', TIME_OPTIONS, '—')}</label>
       </div>
       <label class="field"><span>Source</span><input name="source" value="${esc(r?.source)}" placeholder="Website, book, or person"></label>
-      <label class="field"><span>Ingredients</span>
-        <textarea name="ingredients" rows="10" placeholder="2 cups flour&#10;1 tsp salt&#10;&#10;For the sauce:&#10;3 tbsp butter">${esc(r?.ingredients)}</textarea>
-        <div class="hint">One per line. End a line with “:” to make a section heading.</div></label>
+      <div class="field"><span>Ingredients</span>
+        <div id="ing-rows" class="ing-rows">${ingredientRowsHtml(r ? parseIngredients(r.ingredients) : [])}</div>
+        <div class="ing-actions">
+          <button type="button" class="btn small" data-action="add-ing-row">${I.plus} Ingredient</button>
+          <button type="button" class="btn small" data-action="add-ing-header">${I.plus} Section</button>
+          <button type="button" class="btn small" data-action="paste-ingredients">${I.clipboard} Paste List</button>
+        </div></div>
       <label class="field"><span>Directions</span>
         <textarea name="directions" rows="10" placeholder="One step per line">${esc(r?.directions)}</textarea></label>
       <label class="field"><span>Notes</span><textarea name="notes" rows="4">${esc(r?.notes)}</textarea></label>
       <button class="btn primary block" type="submit">Save Recipe</button>
     </div>
     </form>`;
+}
+
+function ingredientRowHtml(p = null) {
+  const remove = `<button type="button" class="icon-btn" data-action="remove-ing-row" aria-label="Remove">${I.x}</button>`;
+  if (p && p.header) {
+    return `<div class="ing-row header-row" data-kind="header">
+      <input class="input" value="${esc(p.header)}" placeholder="Section name, e.g. For the sauce">${remove}</div>`;
+  }
+  const name = !p ? '' : p.qty === null && !p.unit ? p.raw : p.name;
+  return `<div class="ing-row" data-kind="item" data-max="${p && p.qtyMax !== null ? p.qtyMax : ''}">
+    ${amountPicker('ing-', p ? p.qty : null, p ? p.unit : null)}
+    <input class="input ing-name" value="${esc(name)}" placeholder="Ingredient" enterkeyhint="next">${remove}</div>`;
+}
+
+function ingredientRowsHtml(parsed) {
+  const rows = parsed.map(ingredientRowHtml);
+  // Always leave an empty row (a few for a new recipe) ready to fill in.
+  const blanks = parsed.length ? 1 : 3;
+  for (let i = 0; i < blanks; i++) rows.push(ingredientRowHtml());
+  return rows.join('');
+}
+
+// Reads the ingredient rows back into lines of text ("1½ cups flour").
+function editorIngredients() {
+  return [...document.querySelectorAll('#ing-rows .ing-row')].map(row => {
+    const input = row.querySelector('input.input');
+    const text = input.value.trim();
+    if (row.dataset.kind === 'header') return text ? `${text.replace(/:$/, '')}:` : '';
+    if (!text) return '';
+    const { qty, unit } = readAmount(row, 'ing-');
+    const max = row.dataset.max ? Number(row.dataset.max) : null;
+    return buildLine({ qty, qtyMax: qty !== null && max > qty ? max : null, unit, name: text });
+  }).filter(Boolean).join('\n');
+}
+
+function appendIngredientRow(html, after = null) {
+  const wrap = document.getElementById('ing-rows');
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const row = tmp.firstElementChild;
+  if (after) after.after(row); else wrap.append(row);
+  row.querySelector('input.input').focus();
+  return row;
 }
 
 function starButtons(n) {
@@ -395,12 +514,12 @@ async function submitEditor(form) {
   const fd = new FormData(form);
   const data = {
     name: String(fd.get('name')).trim(),
-    categories: String(fd.get('categories')).split(',').map(s => s.trim()).filter(Boolean),
+    categories: [...new Set([...fd.getAll('cat').map(String), ...String(fd.get('newcats')).split(',').map(s => s.trim()).filter(Boolean)])],
     servings: String(fd.get('servings')).trim(),
     prepTime: String(fd.get('prepTime')).trim(),
     cookTime: String(fd.get('cookTime')).trim(),
     source: String(fd.get('source')).trim(),
-    ingredients: String(fd.get('ingredients')).trim(),
+    ingredients: editorIngredients(),
     directions: String(fd.get('directions')).trim(),
     notes: String(fd.get('notes')).trim(),
     rating: editorRating,
@@ -443,7 +562,8 @@ function resizeImage(file, max = 1200) {
 // Grocery list
 function groceryRow(g, amount) {
   const sources = [...new Set(g.parts.map(p => p.recipeName).filter(Boolean))];
-  const inPantry = !g.checked && ingredientStatus(state, g.key) === 'pantry';
+  // Same rule as the "already in your pantry" banner: top-ups of a known amount aren't flagged.
+  const inPantry = groceryInPantry(state).includes(g);
   const sub = [sources.join(', '), g.note].filter(Boolean).join(' · ');
   return `<div class="item ${g.checked ? 'checked' : ''}">
     <button class="check ${g.checked ? 'on' : ''}" data-action="toggle-item" data-id="${g.id}" aria-label="${g.checked ? 'Uncheck' : 'Check off'} ${esc(g.name)}" aria-pressed="${g.checked}">${I.check}</button>
@@ -493,9 +613,9 @@ function viewGrocery() {
         <h1>Grocery List<span class="sub">${open.length} item${open.length === 1 ? '' : 's'} to buy</span></h1>
         ${state.grocery.length ? `<button class="icon-btn" data-action="grocery-menu" aria-label="List options" title="Options">${I.more}</button>` : ''}
       </div>
-      <form class="add-bar" data-form="add-grocery">
-        <input id="grocery-input" name="entry" placeholder="Add an item, e.g. 2 lbs chicken" autocomplete="off" enterkeyhint="done">
-        <button class="btn primary" type="submit" aria-label="Add">${I.plus}</button>
+      <form class="add-form" data-form="add-grocery">
+        <input id="grocery-input" class="input" name="entry" placeholder="Add an item" autocomplete="off" enterkeyhint="done">
+        <div class="add-row">${amountPicker('add-')}<button class="btn primary" type="submit">${I.plus} Add</button></div>
       </form>
     </header>
     <div class="content">
@@ -524,21 +644,21 @@ function viewPantry() {
   $view.innerHTML = `
     <header class="topbar">
       <div class="topbar-row"><h1>Pantry<span class="sub">${state.pantry.length} item${state.pantry.length === 1 ? '' : 's'} on hand</span></h1></div>
-      <form class="add-bar" data-form="add-pantry">
-        <input id="pantry-input" name="entry" placeholder="Add something you have" autocomplete="off" enterkeyhint="done">
-        <button class="btn primary" type="submit" aria-label="Add">${I.plus}</button>
+      <form class="add-form" data-form="add-pantry">
+        <input id="pantry-input" class="input" name="entry" placeholder="Add something you have" autocomplete="off" enterkeyhint="done">
+        <div class="add-row">${amountPicker('add-')}<button class="btn primary" type="submit">${I.plus} Add</button></div>
       </form>
       ${state.pantry.length > 8 ? `<label class="search">${I.search}<span class="sr-only">Search pantry</span>
         <input id="pantry-search" type="search" placeholder="Search pantry" value="${esc(ui.pantrySearch)}"></label>` : ''}
     </header>
     <div class="content">
       ${!state.pantry.length ? `<div class="empty">${I.pantry}<h2>Nothing in your pantry</h2>
-        <p>Add what you have at home. Recipes will show what you already have, and those items won’t be added to your grocery list. Items you check off while shopping land here too.</p></div>` : ''}
+        <p>Add what you have at home. Recipes will show what you already have, and those items won’t be added to your grocery list. Pick an amount and recipes that need more will add just the difference. Items you check off while shopping land here too.</p></div>` : ''}
       ${sortAisles([...byAisle.keys()]).map(aisle => {
         const rows = byAisle.get(aisle).sort((a, b) => a.name.localeCompare(b.name));
         return `<section class="group"><h3 class="group-title">${esc(aisle)} <span class="n">${rows.length}</span></h3>
         <div class="rows">${rows.map(p => `<div class="item">
-          <div class="main" data-action="edit-pantry" data-id="${p.id}"><span class="name">${esc(p.name)}</span></div>
+          <div class="main" data-action="edit-pantry" data-id="${p.id}"><span class="name">${esc(p.name)}</span>${p.qty !== null && p.qty !== undefined ? `<span class="amount">${esc(formatAmount(p.qty, null, p.unit))}</span>` : ''}</div>
           <button class="btn small" data-action="used-up" data-id="${p.id}">Used Up</button>
         </div>`).join('')}</div></section>`;
       }).join('')}
@@ -560,7 +680,7 @@ function viewSettings() {
       </div>
       <div class="settings-card">
         <h2>How the grocery list stays in sync</h2>
-        <p>When you add a recipe to the list, anything already in your pantry or already on the list is unchecked, so you only add what you need. The same ingredient from different recipes is combined into one item. Checked-off items move to your pantry when you tap “Move to Pantry”, and removing a recipe from the list takes its ingredients with it.</p>
+        <p>When you add a recipe to the list, anything already in your pantry or already on the list is unchecked, so you only add what you need. If your pantry has an amount and the recipe needs more, only the difference is added. The same ingredient from different recipes is combined into one item. Checked-off items move to your pantry when you tap “Move to Pantry”, and removing a recipe from the list takes its ingredients with it.</p>
       </div>
       <div class="settings-card">
         <h2>Erase Everything</h2>
@@ -595,7 +715,7 @@ $sheet.addEventListener('click', e => { if (e.target === $sheet) closeSheet(); }
 function openAddToList(recipe) {
   const factor = ui.scale[recipe.id] || 1;
   const plan = recipeListPlan(state, recipe, factor);
-  const label = { pantry: 'In pantry', list: 'On list', bought: 'In cart', need: '' };
+  const label = { pantry: 'In pantry', list: 'On list', bought: 'In cart', need: '', low: '' };
   const body = `
     <p style="margin:0 0 12px;color:var(--muted);font-size:14px">${esc(recipe.name)}${factor !== 1 ? ` · scaled ${esc(formatAmount(factor))}×` : ''}. Items you already have are unchecked; amounts for items already on the list are combined.</p>
     <div style="display:flex;gap:14px;margin-bottom:10px">
@@ -606,8 +726,10 @@ function openAddToList(recipe) {
     <ul class="pick-list">${plan.map(row => {
       if (row.header) return `<li class="header">${esc(row.parsed.header)}</li>`;
       const p = row.parsed;
-      const text = p.qty !== null ? `<b>${esc(formatAmount(row.qty, p.qtyMax !== null ? p.qtyMax * factor : null, p.unit))}</b> ${esc(p.name)}` : esc(p.raw);
-      const pill = row.status === 'list' && !row.alreadyAdded ? 'On list · adds more' : label[row.status];
+      const text = p.qty !== null ? `<b>${esc(formatAmount(p.qty * factor, p.qtyMax !== null ? p.qtyMax * factor : null, p.unit))}</b> ${esc(p.name)}` : esc(p.raw);
+      const pill = row.status === 'list' && !row.alreadyAdded ? 'On list · adds more'
+        : row.status === 'low' ? `Not enough · adds ${formatAmount(row.qty, null, p.unit)}`
+          : label[row.status];
       return `<li><label><input type="checkbox" name="pick" value="${row.index}" data-need="${row.selected}" ${row.selected ? 'checked' : ''}>
         <span class="txt">${text}</span></label>${pill ? `<span class="pill ${row.status}">${pill}</span>` : ''}</li>`;
     }).join('')}</ul>`;
@@ -630,7 +752,10 @@ function aisleSelect(current) {
 }
 
 function openEditItem(item) {
-  const breakdown = item.parts.map(p => {
+  const fromRecipes = item.parts.filter(p => p.recipeId);
+  const mine = combineAmounts(item.parts.filter(p => !p.recipeId));
+  const myAmount = mine.length === 1 ? mine[0] : { qty: null, unit: null };
+  const breakdown = fromRecipes.map(p => {
     const amt = formatAmount(p.qty, null, p.unit);
     return `<li><span class="txt">${esc(p.recipeName || 'Added by you')}</span><span style="color:var(--muted)">${esc(amt || '—')}</span></li>`;
   }).join('');
@@ -638,7 +763,8 @@ function openEditItem(item) {
     <label class="field"><span>Name</span><input name="name" value="${esc(item.name)}" required></label>
     <label class="field"><span>Aisle</span>${aisleSelect(item.aisle)}<div class="hint">Remembered for next time.</div></label>
     <label class="field"><span>Note</span><input name="note" value="${esc(item.note)}" placeholder="Brand, size…"></label>
-    ${item.parts.length ? `<div class="field"><span>Needed for</span><ul class="pick-list">${breakdown}</ul></div>` : ''}
+    <div class="field"><span>${fromRecipes.length ? 'Extra amount (besides recipes)' : 'Amount'}</span>${amountPicker('edit-', myAmount.qty, myAmount.unit)}</div>
+    ${fromRecipes.length ? `<div class="field"><span>Needed for</span><ul class="pick-list">${breakdown}</ul></div>` : ''}
     <button type="button" class="btn danger block" data-action="delete-item" data-id="${item.id}">${I.trash} Remove from List</button>`, {
     confirmLabel: 'Done',
     onConfirm: form => {
@@ -648,6 +774,15 @@ function openEditItem(item) {
       const aisle = String(fd.get('aisle'));
       if (aisle !== item.aisle) setAisle(state, item.key, aisle);
       item.note = String(fd.get('note')).trim();
+      const amount = readAmount(form, 'edit-');
+      const before = item.parts.filter(p => !p.recipeId);
+      const changed = mine.length > 1 || amount.qty !== myAmount.qty || amount.unit !== (myAmount.unit || null);
+      if (changed) {
+        item.parts = item.parts.filter(p => p.recipeId);
+        if (hasAmount(amount) || !item.parts.length) item.parts.push({ recipeId: null, recipeName: null, ...amount });
+      } else if (!before.length && !item.parts.length) {
+        item.parts.push({ recipeId: null, recipeName: null, qty: null, unit: null });
+      }
       commit();
     },
   });
@@ -656,6 +791,7 @@ function openEditItem(item) {
 function openEditPantry(item) {
   openSheet('Pantry Item', `
     <label class="field"><span>Name</span><input name="name" value="${esc(item.name)}" required></label>
+    <div class="field"><span>Amount you have</span>${amountPicker('edit-', item.qty ?? null, item.unit ?? null)}<div class="hint">Leave blank if you’re not sure — it will count as enough.</div></div>
     <label class="field"><span>Aisle</span>${aisleSelect(item.aisle)}</label>
     <button type="button" class="btn danger block" data-action="delete-pantry" data-id="${item.id}">${I.trash} Remove from Pantry</button>`, {
     confirmLabel: 'Done',
@@ -666,9 +802,27 @@ function openEditPantry(item) {
         item.name = name;
         item.key = normalizeName(name) || item.key;
       }
+      const amount = readAmount(form, 'edit-');
+      item.qty = amount.qty;
+      item.unit = amount.unit;
       const aisle = String(fd.get('aisle'));
       if (aisle !== item.aisle) setAisle(state, item.key, aisle);
       commit();
+    },
+  });
+}
+
+function openPasteIngredients() {
+  openSheet('Paste Ingredients', `
+    <p style="margin:0 0 10px;color:var(--muted);font-size:14px">Paste a list of ingredients, one per line. Amounts and units will be put into the dropdowns for you.</p>
+    <textarea class="input" name="text" rows="12" placeholder="2 cups flour&#10;1 tsp salt&#10;3 tbsp butter" required></textarea>`, {
+    confirmLabel: 'Add',
+    onConfirm: form => {
+      const wrap = document.getElementById('ing-rows');
+      if (!wrap) return;
+      // Drop empty rows, add the pasted ones, then keep one blank row at the end.
+      for (const row of wrap.querySelectorAll('.ing-row')) if (!row.querySelector('input.input').value.trim()) row.remove();
+      wrap.insertAdjacentHTML('beforeend', ingredientRowsHtml(parseIngredients(new FormData(form).get('text'))));
     },
   });
 }
@@ -682,9 +836,17 @@ function openImport() {
       const parsed = parseRecipeText(new FormData(form).get('text'));
       const f = document.getElementById('recipe-form');
       if (!f) return;
-      for (const k of ['name', 'servings', 'prepTime', 'cookTime', 'ingredients', 'directions', 'notes']) {
+      for (const k of ['name', 'directions', 'notes']) {
         if (parsed[k] && f.elements[k]) f.elements[k].value = parsed[k];
       }
+      // Dropdowns: keep what was pasted even if it isn't one of the usual choices.
+      for (const k of ['servings', 'prepTime', 'cookTime']) {
+        if (!parsed[k] || !f.elements[k]) continue;
+        const sel = f.elements[k];
+        if (![...sel.options].some(o => o.value === parsed[k])) sel.add(new Option(parsed[k], parsed[k]), 1);
+        sel.value = parsed[k];
+      }
+      if (parsed.ingredients) document.getElementById('ing-rows').innerHTML = ingredientRowsHtml(parseIngredients(parsed.ingredients));
     },
   });
 }
@@ -807,6 +969,19 @@ function handleAction(el, e) {
     case 'open-import':
       openImport();
       break;
+    case 'add-ing-row':
+      appendIngredientRow(ingredientRowHtml());
+      break;
+    case 'add-ing-header':
+      appendIngredientRow(ingredientRowHtml({ header: '' }));
+      break;
+    case 'remove-ing-row':
+      el.closest('.ing-row').remove();
+      if (!document.querySelector('#ing-rows .ing-row')) appendIngredientRow(ingredientRowHtml());
+      break;
+    case 'paste-ingredients':
+      openPasteIngredients();
+      break;
     case 'close-sheet':
       closeSheet();
       break;
@@ -879,7 +1054,7 @@ function handleAction(el, e) {
       if (item) {
         toast(`${item.name} used up`, {
           label: 'Add to List',
-          run: () => { addManualItem(state, item.name); commit(); toast(`${item.name} added to your grocery list`); },
+          run: () => { addManualItem(state, item.name, { qty: item.qty ?? null, unit: item.unit ?? null }); commit(); toast(`${item.name} added to your grocery list`); },
         });
       }
       break;
@@ -910,6 +1085,7 @@ function handleAction(el, e) {
 
 for (const root of [document.body]) {
   root.addEventListener('click', e => {
+    if (e.target.closest('select')) return;
     const el = e.target.closest('[data-action]');
     if (el) handleAction(el, e);
   });
@@ -924,17 +1100,39 @@ document.addEventListener('submit', e => {
     e.preventDefault();
     const text = form.elements.entry.value.trim();
     if (!text) return;
+    const amount = readAmount(form, 'add-');
     const lines = text.split(/\n|,(?![^(]*\))/).map(s => s.trim()).filter(Boolean);
-    for (const line of lines) addManualItem(state, line);
+    // The dropdown amount applies when adding a single item.
+    for (const line of lines) addManualItem(state, line, lines.length === 1 ? amount : null);
     ui.focusAfterRender = 'grocery-input';
     commit();
   } else if (form.dataset.form === 'add-pantry') {
     e.preventDefault();
     const text = form.elements.entry.value.trim();
     if (!text) return;
-    for (const line of text.split(/\n|,/).map(s => s.trim()).filter(Boolean)) addToPantry(state, line);
+    const amount = readAmount(form, 'add-');
+    const lines = text.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (lines.length === 1 && hasAmount(amount)) {
+        addToPantry(state, line, null, amount);
+      } else {
+        // "2 cups flour" typed in works too.
+        const p = parseIngredient(line);
+        addToPantry(state, p && !p.header && p.qty !== null ? p.name : line, null, p && !p.header ? { qty: p.qty, unit: p.qty !== null ? p.unit : null } : {});
+      }
+    }
     ui.focusAfterRender = 'pantry-input';
     commit();
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.closest && e.target.closest('#ing-rows')) {
+    e.preventDefault();
+    const row = e.target.closest('.ing-row');
+    const next = row.nextElementSibling;
+    if (next && !next.querySelector('input.input').value.trim()) next.querySelector('input.input').focus();
+    else appendIngredientRow(ingredientRowHtml(), row);
   }
 });
 
@@ -953,7 +1151,17 @@ document.addEventListener('input', e => {
 });
 
 document.addEventListener('change', async e => {
-  if (e.target.id === 'recipe-sort') {
+  if (e.target.classList.contains('convert') || e.target.id === 'convert-all') {
+    const id = route().id;
+    const conv = ui.convert[id] || (ui.convert[id] = { all: '', lines: {} });
+    if (e.target.id === 'convert-all') {
+      conv.all = e.target.value;
+      conv.lines = {};
+    } else {
+      conv.lines[e.target.dataset.i] = e.target.value;
+    }
+    render();
+  } else if (e.target.id === 'recipe-sort') {
     ui.sort = e.target.value;
     setPref('sort', ui.sort);
     document.getElementById('recipe-results').innerHTML = recipeCardsHtml();

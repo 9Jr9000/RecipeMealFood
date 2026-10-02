@@ -175,7 +175,8 @@ main { flex: 1; min-width: 0; outline: none; padding-bottom: calc(var(--tabbar-h
 .field textarea { resize: vertical; min-height: 90px; line-height: 1.5; }
 .field input:focus, .field select:focus, .field textarea:focus, .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .field .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
-.row-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.row-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.row-fields select { min-width: 0; text-overflow: ellipsis; }
 
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
 .empty svg { width: 54px; height: 54px; opacity: .5; }
@@ -337,3 +338,64 @@ main { flex: 1; min-width: 0; outline: none; padding-bottom: calc(var(--tabbar-h
 }
 .toast button { background: none; border: 0; color: var(--accent); font-weight: 700; cursor: pointer; padding: 4px 8px; filter: brightness(1.3); }
 @media (min-width: 820px) { .toast { bottom: 24px; } }
+
+/* ---------- Dropdowns ---------- */
+select {
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23998f87' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 8px center; background-size: 14px;
+}
+.field select { padding-right: 30px; }
+.amount-picker { display: flex; gap: 6px; min-width: 0; }
+.amount-picker select {
+  border: 1px solid var(--line); background-color: var(--surface); border-radius: 10px;
+  height: 44px; padding: 0 26px 0 10px; outline: none; font-size: 16px; min-width: 0;
+}
+.amount-picker select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.amount-picker select[name$="whole"] { width: 82px; }
+.amount-picker select[name$="frac"] { width: 70px; }
+.amount-picker select[name$="unit"] { width: 96px; }
+
+.add-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.add-form > .input { height: 44px; border-radius: 11px; }
+.add-row { display: flex; gap: 6px; align-items: center; }
+.add-row .amount-picker { flex: 1; }
+.add-row .amount-picker select[name$="unit"] { flex: 1; width: auto; }
+.add-row .btn { height: 44px; flex: none; }
+@media (min-width: 700px) {
+  .add-form { flex-direction: row; }
+  .add-form > .input { flex: 1; min-width: 0; }
+  .add-row .amount-picker select[name$="unit"] { flex: none; width: 96px; }
+}
+
+.ing-rows { display: flex; flex-direction: column; gap: 8px; }
+.ing-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ing-row .ing-name { flex: 1; min-width: 160px; height: 44px; }
+.ing-row.header-row .input { flex: 1; height: 44px; font-weight: 700; background: var(--surface-2); }
+.ing-row .icon-btn { color: var(--muted); width: 36px; height: 36px; }
+@media (max-width: 600px) {
+  .ing-row { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
+  .ing-row .ing-name { order: -2; flex: 1 1 0; min-width: 0; }
+  .ing-row .icon-btn { order: -1; }
+  .ing-row .amount-picker { flex: 1 1 100%; }
+  .ing-row .amount-picker select { flex: 1; width: auto; }
+  .ing-row.header-row { background: none; border: 0; padding: 0; }
+}
+.ing-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+
+.cat-picks { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.check-chip input { position: absolute; opacity: 0; pointer-events: none; }
+.check-chip:has(input:checked) { background: var(--text); color: var(--bg); border-color: var(--text); }
+.check-chip:has(input:focus-visible) { box-shadow: 0 0 0 3px var(--accent-soft); }
+
+select.convert {
+  border: 0; background-color: var(--accent-soft); color: var(--text); font-weight: 650;
+  border-radius: 8px; padding: 2px 24px 2px 8px; margin: -2px 0; font-size: inherit;
+  background-position: right 6px center; background-size: 12px;
+}
+.convert-all { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin-bottom: 10px; }
+.convert-all select { border: 1px solid var(--line); background-color: var(--surface); border-radius: 9px; padding: 6px 28px 6px 10px; color: var(--text); font-size: 14px; }
+
+.status-dot.low { background: var(--amber-soft); color: var(--amber); font-weight: 800; font-size: 13px; }
+.legend .status-dot.low { font-size: 10px; }
+.pill.low { background: var(--amber-soft); color: var(--amber); }

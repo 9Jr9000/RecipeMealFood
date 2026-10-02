@@ -122,3 +122,32 @@ test('adding the same recipe twice does not double its items', () => {
   assert.equal(again.filter(r => r.selected).length, 0);
   assert.ok(again.filter(r => !r.header).every(r => r.alreadyAdded || r.status !== 'list'));
 });
+
+test('pantry amounts: only the shortfall goes on the list', () => {
+  const state = emptyState();
+  const r = saveRecipe(state, { name: 'Cake', ingredients: '2 cups flour\n1 cup sugar\n4 tbsp butter' });
+  addToPantry(state, 'flour', null, { qty: 0.5, unit: 'cup' });
+  addToPantry(state, 'sugar', null, { qty: 2, unit: 'cup' });
+  addToPantry(state, 'butter', null, { qty: 0.25, unit: 'cup' }); // = 4 tbsp, enough
+  const plan = recipeListPlan(state, r);
+  const flour = plan.find(x => x.parsed.key === 'flour');
+  assert.equal(flour.status, 'low');
+  assert.equal(flour.selected, true);
+  assert.equal(flour.qty, 1.5);
+  assert.equal(plan.find(x => x.parsed.key === 'sugar').status, 'pantry');
+  assert.equal(plan.find(x => x.parsed.key === 'butter').status, 'pantry');
+  addRecipeToGrocery(state, r, plan);
+  assert.equal(amountText(state.grocery[0]), '1½ cups');
+  // The top-up isn't flagged as "already in your pantry".
+  assert.equal(groceryInPantry(state).length, 0);
+});
+
+test('bought amounts are added to the pantry', () => {
+  const state = emptyState();
+  addToPantry(state, 'milk', null, { qty: 1, unit: 'cup' });
+  const item = addManualItem(state, 'milk', { qty: 2, unit: 'cup' });
+  setChecked(state, item.id, true);
+  clearChecked(state);
+  assert.equal(state.pantry[0].qty, 3);
+  assert.equal(state.pantry[0].unit, 'cup');
+});
