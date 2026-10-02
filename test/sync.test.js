@@ -151,3 +151,17 @@ test('bought amounts are added to the pantry', () => {
   assert.equal(state.pantry[0].qty, 3);
   assert.equal(state.pantry[0].unit, 'cup');
 });
+
+test('extra amounts go on the list and count against the pantry', () => {
+  const state = emptyState();
+  const r = saveRecipe(state, { name: 'Glaze', ingredients: '⅔ cup + ¼ tbsp sugar\n1 cup plus 2 tbsp flour' });
+  addToPantry(state, 'flour', null, { qty: 1, unit: 'cup' });
+  const plan = recipeListPlan(state, r);
+  const flour = plan.find(x => x.parsed.key === 'flour');
+  assert.equal(flour.status, 'low'); // 1 cup on hand, 1⅛ cups needed
+  addRecipeToGrocery(state, r, plan);
+  assert.equal(amountText(state.grocery.find(g => g.key === 'sugar')), '⅔ cup + ¼ tbsp');
+  assert.equal(amountText(state.grocery.find(g => g.key === 'flour')), '⅛ cup');
+  const milk = addManualItem(state, 'milk', [{ qty: 1, unit: 'cup' }, { qty: 2, unit: 'tbsp' }]);
+  assert.equal(amountText(milk), '1⅛ cups');
+});

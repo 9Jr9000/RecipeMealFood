@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseIngredient, normalizeName, guessAisle, combineAmounts, describeAmounts,
-  formatQty, parseRecipeText, scaleIngredientText, readQuantity,
+  formatQty, parseRecipeText, scaleIngredientText, readQuantity, buildLine, totalAmount,
 } from '../js/ingredients.js';
 
 test('parses quantities, units and names', () => {
@@ -105,4 +105,23 @@ Use good oil.`);
   assert.equal(r.ingredients, '1 lb spaghetti\n2 tbsp olive oil');
   assert.equal(r.directions, 'Boil the pasta.\n\nToss with oil.');
   assert.equal(r.notes, 'Use good oil.');
+});
+
+test('parses extra amounts joined with + or plus', () => {
+  const a = parseIngredient('2/3 cup + 1/4 tbsp sugar');
+  assert.equal(a.unit, 'cup');
+  assert.deepEqual(a.extras, [{ qty: 0.25, unit: 'tbsp' }]);
+  assert.equal(a.name, 'sugar');
+  const b = parseIngredient('1 cup plus 2 tbsp flour');
+  assert.deepEqual(b.extras, [{ qty: 2, unit: 'tbsp' }]);
+  assert.equal(b.key, 'flour');
+  assert.equal(buildLine(a), '⅔ cup + ¼ tbsp sugar');
+  assert.equal(scaleIngredientText(b, 2), '2 cups + 4 tbsp flour');
+  assert.deepEqual(parseIngredient('3 eggs + 1 yolk').extras, []);
+});
+
+test('describes mixed amounts cleanly', () => {
+  assert.equal(describeAmounts([{ qty: 2 / 3, unit: 'cup' }, { qty: 0.25, unit: 'tbsp' }]), '⅔ cup + ¼ tbsp');
+  assert.equal(describeAmounts([{ qty: 1, unit: 'cup' }, { qty: 2, unit: 'tbsp' }]), '1⅛ cups');
+  assert.deepEqual(totalAmount([{ qty: 1, unit: 'cup' }, { qty: 2, unit: 'tbsp' }]), { qty: 1.125, unit: 'cup' });
 });

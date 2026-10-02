@@ -208,8 +208,44 @@ export function parseIngredient(line) {
     }
   }
 
+  // Extra amounts: "⅔ cup + ¼ tbsp sugar", "1 cup plus 2 tbsp flour".
+  const extras = [];
+  while (unit) {
+    const join = rest.match(/^(\+|plus)\s*/i);
+    if (!join) break;
+    const q = readQuantity(rest.slice(join[0].length));
+    if (q.qty === null) break;
+    const r = readUnit(q.rest);
+    if (!r.unit) break;
+    extras.push({ qty: q.qty, unit: r.unit });
+    rest = r.rest;
+  }
+
   const name = rest.trim() || raw;
-  return { raw, qty, qtyMax, unit, name, key: normalizeName(name) };
+  return { raw, qty, qtyMax, unit, extras, name, key: normalizeName(name) };
+}
+
+// All amounts of a parsed ingredient ("⅔ cup + ¼ tbsp" -> two), optionally scaled.
+export function ingredientAmounts(p, factor = 1) {
+  if (!p || p.header) return [];
+  const out = [];
+  if (p.qty !== null || p.unit) out.push({ qty: p.qty !== null ? p.qty * factor : null, unit: p.unit });
+  for (const x of p.extras || []) out.push({ qty: x.qty * factor, unit: x.unit });
+  return out;
+}
+
+// Adds amounts up in the first amount's unit; null when they can't be added up.
+export function totalAmount(amounts) {
+  const list = (amounts || []).filter(a => a.qty !== null && a.qty !== undefined);
+  if (!list.length) return null;
+  const unit = list[0].unit || null;
+  let total = 0;
+  for (const a of list) {
+    const v = amountIn(a.qty, a.unit || null, unit);
+    if (v === null) return null;
+    total += v;
+  }
+  return { qty: total, unit };
 }
 
 export function parseIngredients(text) {
@@ -293,23 +329,45 @@ export function combineAmounts(amounts) {
   return out;
 }
 
+// True when n is a whole number or lands exactly on one of the fractions we display.
+function isExactlyNice(n) {
+  const f = n - Math.floor(n);
+  return f < 0.005 || f > 0.995 || NICE_FRACTIONS.some(([v]) => Math.abs(f - v) < 0.005);
+}
+
 export function describeAmounts(amounts) {
-  return combineAmounts(amounts)
-    .map(a => formatAmount(a.qty, null, a.unit))
-    .filter(Boolean)
-    .join(' + ');
+  const out = [];
+  for (const a of combineAmounts(amounts)) {
+    const dim = a.unit ? dimensionOf(a.unit) : null;
+    if (dim && a.qty !== null && !isExactlyNice(a.qty)) {
+      // Adding up wouldn't give a clean amount ("0.68 cup"), so list the units separately
+      // ("⅔ cup + ¼ tbsp"), largest unit first.
+      const table = dim === 'volume' ? VOLUME_TSP : WEIGHT_G;
+      const byUnit = new Map();
+      for (const x of amounts) {
+        if (x.qty !== null && x.qty !== undefined && x.unit && dimensionOf(x.unit) === dim) {
+          byUnit.set(x.unit, (byUnit.get(x.unit) || 0) + x.qty);
+        }
+      }
+      [...byUnit].sort((u1, u2) => table[u2[0]] - table[u1[0]]).forEach(([u, q]) => out.push(formatAmount(q, null, u)));
+    } else {
+      out.push(formatAmount(a.qty, null, a.unit));
+    }
+  }
+  return out.filter(Boolean).join(' + ');
 }
 
 // Scales a parsed ingredient and returns display text.
 export function scaleIngredientText(parsed, factor) {
   if (!parsed || parsed.header) return parsed ? parsed.raw : '';
   if (parsed.qty === null || factor === 1) return parsed.raw;
-  const amount = formatAmount(
-    parsed.qty * factor,
-    parsed.qtyMax !== null ? parsed.qtyMax * factor : null,
-    parsed.unit,
-  );
-  return `${amount} ${parsed.name}`.trim();
+  return buildLine({
+    qty: parsed.qty * factor,
+    qtyMax: parsed.qtyMax !== null ? parsed.qtyMax * factor : null,
+    unit: parsed.unit,
+    extras: (parsed.extras || []).map(x => ({ qty: x.qty * factor, unit: x.unit })),
+    name: parsed.name,
+  });
 }
 
 // ---------- Aisles ----------
@@ -407,17 +465,12 @@ export const UNIT_GROUPS = [
 ];
 export const UNIT_VALUES = UNIT_GROUPS.flatMap(([, units]) => units.map(([v]) => v));
 
-// Whole-number choices; fractions are picked separately.
-export const WHOLE_OPTIONS = [
-  ...Array.from({ length: 20 }, (_, i) => i + 1),
-  24, 25, 30, 32, 36, 40, 48, 50, 60, 64, 75, 80, 100, 120, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 750, 800, 900, 1000,
-];
 export const FRACTION_OPTIONS = [
   ['1/16', 1 / 16], ['⅛', 1 / 8], ['¼', 1 / 4], ['⅓', 1 / 3], ['½', 1 / 2], ['⅔', 2 / 3], ['¾', 3 / 4],
 ];
 
-// Splits 1.5 into { whole: 1, frac: '½' } for prefilling the dropdowns.
-// Returns null when the amount can't be shown exactly with the dropdowns.
+// Splits 1.5 into { whole: 1, frac: '½' } for prefilling the amount box and fraction dropdown.
+// Returns null when the fraction isn't one of the dropdown's choices (e.g. 2.37).
 export function splitQty(qty) {
   if (qty === null || qty === undefined || Number.isNaN(qty)) return { whole: '', frac: '' };
   let whole = Math.floor(qty + 1e-9);
@@ -429,7 +482,6 @@ export function splitQty(qty) {
     else if (rest > 0.97) whole += 1;
     else return null;
   }
-  if (whole && !WHOLE_OPTIONS.includes(whole)) return null;
   return { whole: whole || '', frac };
 }
 
@@ -468,8 +520,11 @@ export function amountIn(qty, from, to) {
   return (qty * CONVERT_TSP[from]) / CONVERT_TSP[to];
 }
 
-// Turns dropdown values back into a recipe ingredient line ("1½ cup flour").
-export function buildLine({ qty = null, qtyMax = null, unit = null, name = '' }) {
-  const amount = qty !== null ? formatAmount(qty, qtyMax, unit) : unit || '';
+// Turns picked amounts back into a recipe ingredient line ("1½ cups flour", "⅔ cup + ¼ tbsp sugar").
+export function buildLine({ qty = null, qtyMax = null, unit = null, extras = [], name = '' }) {
+  let amount = qty !== null ? formatAmount(qty, qtyMax, unit) : unit || '';
+  for (const x of extras) {
+    if (x.qty !== null && x.qty !== undefined && x.unit) amount += ` + ${formatAmount(x.qty, null, x.unit)}`;
+  }
   return `${amount} ${String(name).trim()}`.trim();
 }

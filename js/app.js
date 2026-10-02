@@ -1,8 +1,8 @@
 import * as db from './db.js';
 import {
   parseIngredient, parseIngredients, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
-  normalizeName, UNIT_GROUPS, UNIT_VALUES, WHOLE_OPTIONS, FRACTION_OPTIONS, splitQty, joinQty,
-  isConvertible, convertAmount, CONVERT_TARGETS, buildLine, combineAmounts,
+  normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
+  isConvertible, convertAmount, CONVERT_TARGETS, buildLine, ingredientAmounts, totalAmount,
 } from './ingredients.js';
 import {
   emptyState, uid, saveRecipe, deleteRecipe, recipeListPlan, addRecipeToGrocery, addManualItem,
@@ -11,7 +11,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '3';
+const APP_VERSION = '4';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -129,27 +129,55 @@ function unitOptions(current) {
     .map(([v, label]) => `<option value="${esc(v)}" title="${esc(label)}" ${v === current ? 'selected' : ''}>${esc(v)}</option>`).join('')}</optgroup>`).join('')}`;
 }
 
-// Three dropdowns: whole number, fraction, unit. Names are prefixed so a form can hold several.
-function amountPicker(prefix, qty = null, unit = null) {
-  let split = splitQty(qty);
-  let custom = '';
-  if (!split) {
-    // An amount the dropdowns can't express exactly (e.g. 2.37) is kept as its own choice.
-    split = { whole: '', frac: '' };
-    custom = `<option value="${qty}" selected>${esc(formatQty(qty))}</option>`;
+// One amount: a number box, a fraction dropdown and a unit dropdown.
+// Extra amounts (for "⅔ cup + ¼ tbsp") get an × to remove them.
+function amountGroup(a = {}, removable = false) {
+  let qtyText = '';
+  let frac = '';
+  if (a.qty !== null && a.qty !== undefined) {
+    const split = splitQty(a.qty);
+    if (split) {
+      qtyText = split.whole === '' ? '' : String(split.whole);
+      frac = split.frac;
+    } else {
+      qtyText = String(Math.round(a.qty * 100) / 100); // e.g. 2.37 stays as typed
+    }
   }
-  return `<span class="amount-picker">
-    <select name="${prefix}whole" aria-label="Amount"><option value="">Qty</option>${custom}${WHOLE_OPTIONS.map(n => `<option ${n === split.whole ? 'selected' : ''}>${n}</option>`).join('')}</select>
-    <select name="${prefix}frac" aria-label="Fraction"><option value="">–</option>${FRACTION_OPTIONS.map(([f]) => `<option ${f === split.frac ? 'selected' : ''}>${f}</option>`).join('')}</select>
-    <select name="${prefix}unit" aria-label="Unit">${unitOptions(unit)}</select>
+  return `<span class="amt-group">
+    <input class="qty-input" inputmode="decimal" placeholder="Qty" value="${esc(qtyText)}" aria-label="Amount" autocomplete="off">
+    <select class="frac-select" aria-label="Fraction"><option value="">–</option>${FRACTION_OPTIONS.map(([f]) => `<option ${f === frac ? 'selected' : ''}>${f}</option>`).join('')}</select>
+    <select class="unit-select" aria-label="Unit">${unitOptions(a.unit || null)}</select>
+    ${removable ? `<button type="button" class="amt-x" data-action="remove-amount" aria-label="Remove this amount" title="Remove">${I.x}</button>` : ''}
   </span>`;
 }
 
-function readAmount(root, prefix) {
-  const get = n => root.querySelector(`[name="${prefix}${n}"]`)?.value || '';
-  return { qty: joinQty(get('whole'), get('frac')), unit: get('unit') || null };
+// The + adds another amount only when a recipe needs one (e.g. ⅔ cup + ¼ tbsp).
+function amountPicker(amounts = []) {
+  const list = amounts.length ? amounts : [{}];
+  return `<span class="amount-picker">${list.map((a, i) => amountGroup(a, i > 0)).join('')}<button type="button" class="amt-plus" data-action="add-amount" aria-label="Add another amount" title="Add another amount, e.g. ⅔ cup + ¼ tbsp">${I.plus}</button></span>`;
 }
-function hasAmount(a) { return a.qty !== null || !!a.unit; }
+
+// Reads every filled-in amount from the picker inside `root`.
+function readAmounts(root) {
+  const picker = root.querySelector('.amount-picker');
+  if (!picker) return [];
+  return [...picker.querySelectorAll('.amt-group')].map(g => {
+    const typed = g.querySelector('.qty-input').value.trim();
+    const whole = typed ? readQuantity(typed).qty : null; // accepts "2", "2.5", "1 1/2"
+    const frac = joinQty('', g.querySelector('.frac-select').value);
+    const qty = whole === null && frac === null ? null : (whole || 0) + (frac || 0);
+    return { qty, unit: g.querySelector('.unit-select').value || null };
+  }).filter(hasAmount);
+}
+
+// "⅔ cup + ¼ tbsp" / "1½ cups" for a parsed ingredient.
+function amountsText(p, factor = 1) {
+  const amounts = ingredientAmounts(p, factor);
+  if (amounts.length > 1) return amounts.map(a => formatAmount(a.qty, null, a.unit)).join(' + ');
+  return p.qty !== null ? formatAmount(p.qty * factor, p.qtyMax !== null ? p.qtyMax * factor : null, p.unit) : '';
+}
+
+function hasAmount(a) { return !!a && ((a.qty !== null && a.qty !== undefined) || !!a.unit); }
 
 let toastTimer;
 function toast(message, action) {
@@ -306,26 +334,32 @@ function viewRecipe(id) {
 
   const ingHtml = ingredients.map((p, i) => {
     if (p.header) return `<li class="header">${esc(p.header)}</li>`;
-    const qty = p.qty !== null ? p.qty * factor : null;
-    const max = p.qtyMax !== null ? p.qtyMax * factor : null;
-    const status = ingredientStatus(state, p.key, { qty, unit: p.unit });
+    const amounts = ingredientAmounts(p, factor);
+    const total = totalAmount(amounts);
+    const status = ingredientStatus(state, p.key, total || amounts[0] || null);
     counts[status]++;
+    const written = amountsText(p, factor);
     let text;
-    if (qty !== null && isConvertible(p.unit)) {
+    if (total && amounts.every(a => isConvertible(a.unit))) {
       // The amount itself is a dropdown listing it in every unit from the kitchen chart.
+      const max = amounts.length === 1 && p.qtyMax !== null ? p.qtyMax * factor : null;
+      const inUnit = u => convertAmount(total.qty, total.unit, u);
       // "Show amounts in" skips lines that would become awkward decimals (½ tsp -> 0.17 tbsp).
-      const allFits = conv.all && convertAmount(qty, p.unit, conv.all) >= 1 / 16 && !formatQty(convertAmount(qty, p.unit, conv.all)).includes('.');
-      const target = conv.lines[i] || (allFits ? conv.all : p.unit);
-      const options = [p.unit, ...CONVERT_TARGETS.filter(u => u !== p.unit)]
-        // Skip units where the amount would round to nothing (e.g. "0 kg" of salt).
-        .filter(u => u === p.unit || u === target || convertAmount(qty, p.unit, u) >= 1 / 16)
-        .map(u => {
-          const label = formatAmount(convertAmount(qty, p.unit, u), max !== null ? convertAmount(max, p.unit, u) : null, u);
-          return `<option value="${esc(u)}" ${u === target ? 'selected' : ''}>${esc(label)}</option>`;
-        }).join('');
+      const allFits = conv.all && inUnit(conv.all) >= 1 / 16 && !formatQty(inUnit(conv.all)).includes('.');
+      const target = i in conv.lines ? conv.lines[i] : allFits ? conv.all : '';
+      const options = [`<option value="" ${target === '' ? 'selected' : ''}>${esc(written)}</option>`]
+        .concat(CONVERT_TARGETS
+          .filter(u => amounts.length > 1 || u !== p.unit)
+          // Skip units where the amount would round to nothing (e.g. "0 kg" of salt).
+          .filter(u => u === target || inUnit(u) >= 1 / 16)
+          .map(u => {
+            const label = formatAmount(inUnit(u), max !== null ? convertAmount(max, total.unit, u) : null, u);
+            return `<option value="${esc(u)}" ${u === target ? 'selected' : ''}>${esc(label)}</option>`;
+          }))
+        .join('');
       text = `<select class="convert" data-i="${i}" aria-label="Change unit">${options}</select> ${esc(p.name)}`;
-    } else if (qty !== null) {
-      text = `<span class="amt">${esc(formatAmount(qty, max, p.unit))}</span> ${esc(p.name)}`;
+    } else if (written && amounts[0].qty !== null) {
+      text = `<span class="amt">${esc(written)}</span> ${esc(p.name)}`;
     } else {
       text = esc(p.raw);
     }
@@ -473,7 +507,7 @@ function ingredientRowHtml(p = null) {
   }
   const name = !p ? '' : p.qty === null && !p.unit ? p.raw : p.name;
   return `<div class="ing-row" data-kind="item" data-max="${p && p.qtyMax !== null ? p.qtyMax : ''}">
-    ${amountPicker('ing-', p ? p.qty : null, p ? p.unit : null)}
+    ${amountPicker(p ? ingredientAmounts(p) : [])}
     <input class="input ing-name" value="${esc(name)}" placeholder="Ingredient" enterkeyhint="next">${remove}</div>`;
 }
 
@@ -492,9 +526,10 @@ function editorIngredients() {
     const text = input.value.trim();
     if (row.dataset.kind === 'header') return text ? `${text.replace(/:$/, '')}:` : '';
     if (!text) return '';
-    const { qty, unit } = readAmount(row, 'ing-');
+    const [first = { qty: null, unit: null }, ...extras] = readAmounts(row);
     const max = row.dataset.max ? Number(row.dataset.max) : null;
-    return buildLine({ qty, qtyMax: qty !== null && max > qty ? max : null, unit, name: text });
+    const qtyMax = first.qty !== null && !extras.length && max > first.qty ? max : null;
+    return buildLine({ qty: first.qty, qtyMax, unit: first.unit, extras, name: text });
   }).filter(Boolean).join('\n');
 }
 
@@ -618,7 +653,7 @@ function viewGrocery() {
       </div>
       <form class="add-form" data-form="add-grocery">
         <input id="grocery-input" class="input" name="entry" placeholder="Add an item" autocomplete="off" enterkeyhint="done">
-        <div class="add-row">${amountPicker('add-')}<button class="btn primary" type="submit">${I.plus} Add</button></div>
+        <div class="add-row">${amountPicker()}<button class="btn primary" type="submit">Add</button></div>
       </form>
     </header>
     <div class="content">
@@ -649,7 +684,7 @@ function viewPantry() {
       <div class="topbar-row"><h1>Pantry<span class="sub">${state.pantry.length} item${state.pantry.length === 1 ? '' : 's'} on hand</span></h1></div>
       <form class="add-form" data-form="add-pantry">
         <input id="pantry-input" class="input" name="entry" placeholder="Add something you have" autocomplete="off" enterkeyhint="done">
-        <div class="add-row">${amountPicker('add-')}<button class="btn primary" type="submit">${I.plus} Add</button></div>
+        <div class="add-row">${amountPicker()}<button class="btn primary" type="submit">Add</button></div>
       </form>
       ${state.pantry.length > 8 ? `<label class="search">${I.search}<span class="sr-only">Search pantry</span>
         <input id="pantry-search" type="search" placeholder="Search pantry" value="${esc(ui.pantrySearch)}"></label>` : ''}
@@ -733,7 +768,7 @@ function openAddToList(recipe) {
     <ul class="pick-list">${plan.map(row => {
       if (row.header) return `<li class="header">${esc(row.parsed.header)}</li>`;
       const p = row.parsed;
-      const text = p.qty !== null ? `<b>${esc(formatAmount(p.qty * factor, p.qtyMax !== null ? p.qtyMax * factor : null, p.unit))}</b> ${esc(p.name)}` : esc(p.raw);
+      const text = p.qty !== null ? `<b>${esc(amountsText(p, factor))}</b> ${esc(p.name)}` : esc(p.raw);
       const pill = row.status === 'list' && !row.alreadyAdded ? 'On list · adds more'
         : row.status === 'low' ? `Not enough · adds ${formatAmount(row.qty, null, p.unit)}`
           : label[row.status];
@@ -760,8 +795,8 @@ function aisleSelect(current) {
 
 function openEditItem(item) {
   const fromRecipes = item.parts.filter(p => p.recipeId);
-  const mine = combineAmounts(item.parts.filter(p => !p.recipeId));
-  const myAmount = mine.length === 1 ? mine[0] : { qty: null, unit: null };
+  const mine = item.parts.filter(p => !p.recipeId && hasAmount(p));
+  const key = list => JSON.stringify(list.map(a => [a.qty === null ? null : Math.round(a.qty * 1000) / 1000, a.unit || null]));
   const breakdown = fromRecipes.map(p => {
     const amt = formatAmount(p.qty, null, p.unit);
     return `<li><span class="txt">${esc(p.recipeName || 'Added by you')}</span><span style="color:var(--muted)">${esc(amt || '—')}</span></li>`;
@@ -770,7 +805,7 @@ function openEditItem(item) {
     <label class="field"><span>Name</span><input name="name" value="${esc(item.name)}" required></label>
     <label class="field"><span>Aisle</span>${aisleSelect(item.aisle)}<div class="hint">Remembered for next time.</div></label>
     <label class="field"><span>Note</span><input name="note" value="${esc(item.note)}" placeholder="Brand, size…"></label>
-    <div class="field"><span>${fromRecipes.length ? 'Extra amount (besides recipes)' : 'Amount'}</span>${amountPicker('edit-', myAmount.qty, myAmount.unit)}</div>
+    <div class="field"><span>${fromRecipes.length ? 'Extra amount (besides recipes)' : 'Amount'}</span>${amountPicker(mine)}</div>
     ${fromRecipes.length ? `<div class="field"><span>Needed for</span><ul class="pick-list">${breakdown}</ul></div>` : ''}
     <button type="button" class="btn danger block" data-action="delete-item" data-id="${item.id}">${I.trash} Remove from List</button>`, {
     confirmLabel: 'Done',
@@ -781,15 +816,13 @@ function openEditItem(item) {
       const aisle = String(fd.get('aisle'));
       if (aisle !== item.aisle) setAisle(state, item.key, aisle);
       item.note = String(fd.get('note')).trim();
-      const amount = readAmount(form, 'edit-');
-      const before = item.parts.filter(p => !p.recipeId);
-      const changed = mine.length > 1 || amount.qty !== myAmount.qty || amount.unit !== (myAmount.unit || null);
-      if (changed) {
+      const amounts = readAmounts(form);
+      if (key(amounts) !== key(mine)) {
         item.parts = item.parts.filter(p => p.recipeId);
-        if (hasAmount(amount) || !item.parts.length) item.parts.push({ recipeId: null, recipeName: null, ...amount });
-      } else if (!before.length && !item.parts.length) {
-        item.parts.push({ recipeId: null, recipeName: null, qty: null, unit: null });
+        for (const a of amounts) item.parts.push({ recipeId: null, recipeName: null, ...a });
       }
+      // An item with no amounts still needs one entry to stay on the list.
+      if (!item.parts.length) item.parts.push({ recipeId: null, recipeName: null, qty: null, unit: null });
       commit();
     },
   });
@@ -798,7 +831,7 @@ function openEditItem(item) {
 function openEditPantry(item) {
   openSheet('Pantry Item', `
     <label class="field"><span>Name</span><input name="name" value="${esc(item.name)}" required></label>
-    <div class="field"><span>Amount you have</span>${amountPicker('edit-', item.qty ?? null, item.unit ?? null)}<div class="hint">Leave blank if you’re not sure — it will count as enough.</div></div>
+    <div class="field"><span>Amount you have</span>${amountPicker(hasAmount(item) ? [{ qty: item.qty ?? null, unit: item.unit ?? null }] : [])}<div class="hint">Leave blank if you’re not sure — it will count as enough.</div></div>
     <label class="field"><span>Aisle</span>${aisleSelect(item.aisle)}</label>
     <button type="button" class="btn danger block" data-action="delete-pantry" data-id="${item.id}">${I.trash} Remove from Pantry</button>`, {
     confirmLabel: 'Done',
@@ -809,9 +842,11 @@ function openEditPantry(item) {
         item.name = name;
         item.key = normalizeName(name) || item.key;
       }
-      const amount = readAmount(form, 'edit-');
+      // Several amounts (e.g. 1 cup + 2 tbsp) are stored as their total.
+      const amounts = readAmounts(form);
+      const amount = totalAmount(amounts) || amounts[0] || { qty: null, unit: null };
       item.qty = amount.qty;
-      item.unit = amount.unit;
+      item.unit = amount.unit || null;
       const aisle = String(fd.get('aisle'));
       if (aisle !== item.aisle) setAisle(state, item.key, aisle);
       commit();
@@ -989,6 +1024,13 @@ function handleAction(el, e) {
     case 'paste-ingredients':
       openPasteIngredients();
       break;
+    case 'add-amount':
+      el.insertAdjacentHTML('beforebegin', amountGroup({}, true));
+      el.previousElementSibling.querySelector('.qty-input').focus();
+      break;
+    case 'remove-amount':
+      el.closest('.amt-group').remove();
+      break;
     case 'close-sheet':
       closeSheet();
       break;
@@ -1107,25 +1149,26 @@ document.addEventListener('submit', e => {
     e.preventDefault();
     const text = form.elements.entry.value.trim();
     if (!text) return;
-    const amount = readAmount(form, 'add-');
+    const amounts = readAmounts(form);
     const lines = text.split(/\n|,(?![^(]*\))/).map(s => s.trim()).filter(Boolean);
-    // The dropdown amount applies when adding a single item.
-    for (const line of lines) addManualItem(state, line, lines.length === 1 ? amount : null);
+    // The picked amounts apply when adding a single item.
+    for (const line of lines) addManualItem(state, line, lines.length === 1 ? amounts : null);
     ui.focusAfterRender = 'grocery-input';
     commit();
   } else if (form.dataset.form === 'add-pantry') {
     e.preventDefault();
     const text = form.elements.entry.value.trim();
     if (!text) return;
-    const amount = readAmount(form, 'add-');
+    const picked = readAmounts(form);
     const lines = text.split(/\n|,/).map(s => s.trim()).filter(Boolean);
     for (const line of lines) {
-      if (lines.length === 1 && hasAmount(amount)) {
-        addToPantry(state, line, null, amount);
+      if (lines.length === 1 && picked.length) {
+        addToPantry(state, line, null, totalAmount(picked) || picked[0]);
       } else {
         // "2 cups flour" typed in works too.
         const p = parseIngredient(line);
-        addToPantry(state, p && !p.header && p.qty !== null ? p.name : line, null, p && !p.header ? { qty: p.qty, unit: p.qty !== null ? p.unit : null } : {});
+        const typed = p && !p.header ? totalAmount(ingredientAmounts(p)) : null;
+        addToPantry(state, typed ? p.name : line, null, typed || {});
       }
     }
     ui.focusAfterRender = 'pantry-input';

@@ -346,26 +346,36 @@ select {
   background-repeat: no-repeat; background-position: right 8px center; background-size: 14px;
 }
 .field select { padding-right: 30px; }
-.amount-picker { display: flex; gap: 6px; min-width: 0; }
-.amount-picker select {
+.amount-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.amt-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.amount-picker select, .amount-picker .qty-input {
   border: 1px solid var(--line); background-color: var(--surface); border-radius: 10px;
-  height: 44px; padding: 0 26px 0 10px; outline: none; font-size: 16px; min-width: 0;
+  height: 44px; outline: none; font-size: 16px; min-width: 0;
 }
-.amount-picker select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.amount-picker select[name$="whole"] { width: 82px; }
-.amount-picker select[name$="frac"] { width: 70px; }
-.amount-picker select[name$="unit"] { width: 96px; }
+.amount-picker select { padding: 0 26px 0 10px; }
+.amount-picker .qty-input { width: 62px; padding: 0 10px; text-align: center; }
+.amount-picker select:focus, .amount-picker .qty-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.amount-picker .frac-select { width: 70px; }
+.amount-picker .unit-select { width: 92px; }
+.amt-plus, .amt-x {
+  flex: none; display: grid; place-items: center; border-radius: 50%; cursor: pointer; padding: 0;
+}
+.amt-plus { width: 32px; height: 32px; border: 1.5px dashed var(--line); background: transparent; color: var(--muted); }
+.amt-plus:hover { color: var(--accent); border-color: var(--accent); }
+.amt-plus svg { width: 16px; height: 16px; }
+.amt-x { width: 26px; height: 26px; border: 0; background: var(--surface-2); color: var(--muted); }
+.amt-x svg { width: 13px; height: 13px; }
+.amt-group + .amt-group::before { content: "+"; color: var(--muted); font-weight: 700; margin-right: 2px; }
 
 .add-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .add-form > .input { height: 44px; border-radius: 11px; }
 .add-row { display: flex; gap: 6px; align-items: center; }
 .add-row .amount-picker { flex: 1; }
-.add-row .amount-picker select[name$="unit"] { flex: 1; width: auto; }
+
 .add-row .btn { height: 44px; flex: none; }
 @media (min-width: 700px) {
   .add-form { flex-direction: row; }
   .add-form > .input { flex: 1; min-width: 0; }
-  .add-row .amount-picker select[name$="unit"] { flex: none; width: 96px; }
 }
 
 .ing-rows { display: flex; flex-direction: column; gap: 8px; }
@@ -378,7 +388,6 @@ select {
   .ing-row .ing-name { order: -2; flex: 1 1 0; min-width: 0; }
   .ing-row .icon-btn { order: -1; }
   .ing-row .amount-picker { flex: 1 1 100%; }
-  .ing-row .amount-picker select { flex: 1; width: auto; }
   .ing-row.header-row { background: none; border: 0; padding: 0; }
 }
 .ing-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }

@@ -9,7 +9,7 @@ It ships with no recipes and never suggests any. Everything you see is something
 - **Paste to import**: paste a recipe copied from anywhere, and the name, ingredients, directions, servings and times are filled in for you to review.
 - **Grocery list**: grouped by aisle or by recipe. The same ingredient from different recipes (or typed in by you) is combined into one item with the amounts added up (e.g. `1 tbsp + 3 tsp` → `2 tbsp`).
 - **Pantry**: what you have at home, optionally with how much.
-- **Dropdowns everywhere**: amounts are picked as whole number + fraction (1/16 to ¾) + unit (tsp, tbsp, cup, oz, lb, g, ml…) for recipe ingredients, grocery items and pantry items. Servings, prep/cook times and categories are dropdowns too.
+- **Amount pickers**: amounts are entered as a number box + fraction dropdown (1/16 to ¾) + unit dropdown (tsp, tbsp, cup, oz, lb, g, ml…) for recipe ingredients, grocery items and pantry items. A **+** next to the amount adds a second measurement when a recipe needs one (e.g. ⅔ cup + ¼ tbsp); pasted text like `1 cup plus 2 tbsp flour` is understood too. Servings, prep/cook times and categories are dropdowns.
 - **Unit conversion**: on a recipe, tap any measured amount to see it in cups, ounces, grams, tablespoons, teaspoons or milliliters, or use *Show amounts in* to switch them all. Conversions follow the kitchen chart 1 c = 8 oz = 229 g = 16 tbsp = 48 tsp = 240 ml (grams are a water-weight approximation).
 
 ## How the sync works

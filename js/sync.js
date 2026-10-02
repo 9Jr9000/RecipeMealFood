@@ -11,7 +11,12 @@
 
 import {
   parseIngredient, parseIngredients, normalizeName, guessAisle, describeAmounts, combineAmounts, amountIn,
+  ingredientAmounts, totalAmount,
 } from './ingredients.js';
+
+function hasAmount(a) {
+  return !!a && ((a.qty !== null && a.qty !== undefined) || !!a.unit);
+}
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -112,18 +117,19 @@ export function addToGrocery(state, { key, name, qty = null, unit = null, recipe
   return item;
 }
 
-// Adds a typed-in item ("2 lbs chicken thighs", "milk"). An amount picked from the
-// dropdowns ({ qty, unit }) takes priority over one typed into the name.
+// Adds a typed-in item ("2 lbs chicken thighs", "milk"). Amounts picked with the
+// amount box/dropdowns ({ qty, unit } or a list of them) take priority over one typed into the name.
 export function addManualItem(state, text, amount = null) {
   const parsed = parseIngredient(text);
   if (!parsed || parsed.header || !parsed.key) return null;
-  const useAmount = amount && (amount.qty !== null || amount.unit);
-  return addToGrocery(state, {
-    key: useAmount ? normalizeName(text) || parsed.key : parsed.key,
-    name: useAmount ? text : parsed.name,
-    qty: useAmount ? amount.qty : parsed.qty,
-    unit: useAmount ? amount.unit || null : parsed.unit,
-  });
+  const picked = (Array.isArray(amount) ? amount : [amount]).filter(hasAmount);
+  const amounts = picked.length ? picked : ingredientAmounts(parsed);
+  const key = picked.length ? normalizeName(text) || parsed.key : parsed.key;
+  const name = picked.length ? text : parsed.name;
+  const [first = { qty: null, unit: null }, ...rest] = amounts;
+  const item = addToGrocery(state, { key, name, qty: first.qty, unit: first.unit || null });
+  for (const a of rest) item.parts.push({ recipeId: null, recipeName: null, qty: a.qty, unit: a.unit || null });
+  return item;
 }
 
 // Ingredients of a recipe, with what the app knows about each one.
@@ -132,19 +138,22 @@ export function recipeListPlan(state, recipe, factor = 1) {
   return parseIngredients(recipe.ingredients)
     .map((p, index) => {
       if (p.header) return { index, parsed: p, header: true };
-      const qty = p.qty !== null ? p.qty * factor : null;
-      const status = ingredientStatus(state, p.key, { qty, unit: p.unit });
+      // "⅔ cup + ¼ tbsp" counts as one total when comparing with the pantry.
+      const amounts = ingredientAmounts(p, factor);
+      const need = totalAmount(amounts) || amounts[0] || null;
+      const status = ingredientStatus(state, p.key, need);
       // On the list only for other recipes -> you still need this recipe's amount too.
       const listed = status === 'list' ? findGrocery(state, p.key) : null;
       const alreadyAdded = !!listed && listed.parts.some(part => part.recipeId === recipe.id);
       // Some in the pantry but not enough -> only add the difference.
-      const shortfall = status === 'low' ? pantryShortfall(findPantry(state, p.key), { qty, unit: p.unit }) : null;
+      const shortfall = status === 'low' ? pantryShortfall(findPantry(state, p.key), need) : null;
       return {
         index,
         parsed: p,
         status,
         alreadyAdded,
-        qty: shortfall || qty,
+        amounts: shortfall ? [{ qty: shortfall, unit: need.unit }] : amounts,
+        qty: shortfall || (amounts[0] ? amounts[0].qty : null),
         shortfall,
         selected: status === 'need' || status === 'low' || (status === 'list' && !alreadyAdded),
       };
@@ -155,14 +164,17 @@ export function addRecipeToGrocery(state, recipe, plan) {
   let added = 0;
   for (const row of plan) {
     if (row.header || !row.selected) continue;
-    addToGrocery(state, {
-      key: row.parsed.key,
-      name: row.parsed.name,
-      qty: row.qty,
-      unit: row.parsed.unit,
-      recipeId: recipe.id,
-      recipeName: recipe.name,
-    });
+    const amounts = row.amounts && row.amounts.length ? row.amounts : [{ qty: null, unit: null }];
+    for (const a of amounts) {
+      addToGrocery(state, {
+        key: row.parsed.key,
+        name: row.parsed.name,
+        qty: a.qty,
+        unit: a.unit || null,
+        recipeId: recipe.id,
+        recipeName: recipe.name,
+      });
+    }
     added++;
   }
   return added;
