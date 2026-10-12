@@ -28,6 +28,29 @@ A Y2K "console chrome" theme: brushed-periwinkle beveled panels, a carbon naviga
 - Matching ignores prep words and plurals (`2 large tomatoes, chopped` matches `tomato`). It also ignores descriptors like `kosher`/`unsalted` (`kosher salt` matches `salt`).
 - An aisle you pick for an item is remembered.
 
+## Sync across phones (optional)
+
+Sign in under **Settings → Sync Across Devices** (Google or email + password) with the same account on
+each phone. Recipes, photos, the grocery list, the pantry and aisle choices sync through Firebase
+(Firestore), live, and changes made offline upload when the phone reconnects. Without signing in,
+everything stays on the device as before.
+
+Each item is merged separately: changes to different recipes/items on two phones both survive, an edit
+made here wins over an older one from the cloud, and duplicates added on two phones (e.g. "milk") are
+combined. The merge logic is in `js/cloudsync.js` (unit tested with two simulated phones in
+`test/cloudsync.test.js`); the Firebase wiring is in `js/cloud.js`.
+
+One-time Firebase setup (project `recipelog-99fe9`, config in `js/firebase-config.js`):
+
+1. **Authentication → Sign-in method**: enable **Google** and **Email/Password**.
+2. **Authentication → Settings → Authorized domains**: add `9jr9000.github.io`.
+3. **Firestore Database → Create database** (production mode).
+4. **Firestore Database → Rules**: paste the contents of [`firestore.rules`](firestore.rules) and **Publish**.
+   These rules let each signed-in account read and write only its own data (`users/{uid}/...`).
+
+The Firebase SDK is served from `js/vendor/firebase/` (see the README there) so sync works offline
+and doesn't depend on a CDN.
+
 ## Running it
 
 It's a static web app with no build step and no dependencies.

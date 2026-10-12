@@ -1,4 +1,5 @@
 import * as db from './db.js';
+import * as cloud from './cloud.js';
 import {
   parseIngredient, parseIngredients, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -11,7 +12,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '5';
+const APP_VERSION = '6';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -62,6 +63,7 @@ let saveTimer = null;
 function commit() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => db.set('state', state), 150);
+  cloud.schedulePush();
   render();
 }
 // Flush pending saves when the app is backgrounded (e.g. switching apps on a phone).
@@ -580,7 +582,7 @@ async function submitEditor(form) {
   go(`#/recipe/${encodeURIComponent(saved.id)}`);
 }
 
-function resizeImage(file, max = 1200) {
+function resizeImage(file, max = 1000) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -591,7 +593,7 @@ function resizeImage(file, max = 1200) {
       canvas.height = Math.round(img.height * scale);
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL('image/jpeg', 0.82));
+      resolve(canvas.toDataURL('image/jpeg', 0.8));
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
     img.src = url;
@@ -709,9 +711,10 @@ function viewSettings() {
   $view.innerHTML = `
     <header class="topbar"><div class="topbar-row"><h1>Settings</h1></div></header>
     <div class="content" style="max-width:720px">
+      ${syncCardHtml()}
       <div class="settings-card">
         <h2>Backup</h2>
-        <p>Your recipes, grocery list and pantry are stored only on this device. Export a backup file to keep them safe or move them to another device.</p>
+        <p>Export a backup file of your recipes, photos, grocery list and pantry to keep a copy or move them somewhere else.</p>
         <div class="btns">
           <button class="btn" data-action="export">Export Backup</button>
           <label class="btn" style="cursor:pointer">Import Backup<input type="file" accept="application/json,.json" id="import-input" hidden></label>
@@ -727,10 +730,70 @@ function viewSettings() {
       </div>
       <div class="settings-card">
         <h2>Erase Everything</h2>
-        <p>Delete all recipes, photos, the grocery list and the pantry from this device.</p>
+        <p>${cloud.isSignedIn() ? 'Delete all recipes, photos, the grocery list and the pantry from your account — on every phone signed in to it.' : 'Delete all recipes, photos, the grocery list and the pantry from this device.'}</p>
         <button class="btn danger" data-action="erase">Erase All Data</button>
       </div>
     </div>`;
+}
+
+// Sign-in / sync status card in Settings.
+let syncError = '';
+let wasSignedIn = false;
+const SYNC_LABELS = {
+  syncing: 'Syncing…',
+  synced: 'Up to date on all your devices',
+  offline: 'Offline — changes are saved on this phone and will sync when you’re back online',
+  error: 'Sync problem',
+};
+function syncCardHtml() {
+  const st = cloud.cloudStatus();
+  if (st.email) {
+    return `<div class="settings-card" id="sync-card">
+      <h2>Sync Across Devices</h2>
+      <p>Signed in as <b>${esc(st.email)}</b>. Sign in with the same account on your other phones to see the same recipes, grocery list and pantry.</p>
+      <p class="sync-state ${esc(st.state)}"><span class="sync-dot"></span>${esc(st.message || SYNC_LABELS[st.state] || '')}</p>
+      <div class="btns"><button class="btn" data-action="sign-out">Sign Out</button></div>
+    </div>`;
+  }
+  return `<div class="settings-card" id="sync-card">
+    <h2>Sync Across Devices</h2>
+    <p>Sign in to keep your recipes, photos, grocery list and pantry the same on all your phones. Use the same account on each phone. Anything already on this phone is added to your account.</p>
+    ${st.state === 'syncing' ? `<p class="sync-state syncing"><span class="sync-dot"></span>${esc(st.message || 'Connecting…')}</p>` : ''}
+    ${syncError || (st.state === 'error' && st.message) ? `<p class="sync-error">${esc(syncError || st.message)}</p>` : ''}
+    <div class="btns"><button class="btn primary" data-action="sign-in-google">Sign In with Google</button></div>
+    <div class="or-rule"><span>or use email</span></div>
+    <form data-form="email-auth" autocomplete="on">
+      <label class="field"><span>Email</span><input name="email" type="email" autocomplete="email" required></label>
+      <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" minlength="6" required></label>
+      <div class="btns">
+        <button class="btn" type="submit" value="signin">Sign In</button>
+        <button class="btn small" type="submit" value="create">Create Account</button>
+        <button class="link-btn" type="button" data-action="reset-password">Forgot password?</button>
+      </div>
+    </form>
+  </div>`;
+}
+function refreshSyncUi() {
+  const card = document.getElementById('sync-card');
+  // Don't wipe what someone is typing into the sign-in form.
+  if (card && !(card.contains(document.activeElement) && document.activeElement.tagName === 'INPUT')) card.outerHTML = syncCardHtml();
+  const st = cloud.cloudStatus();
+  for (const el of document.querySelectorAll('[data-sync]')) {
+    el.hidden = !st.email;
+    el.className = `sync-pill ${st.state}`;
+    el.title = st.email ? `${SYNC_LABELS[st.state] || ''} (${st.email})` : '';
+    el.innerHTML = `<span class="sync-dot"></span>${{ syncing: 'Syncing', synced: 'Synced', offline: 'Offline', error: 'Sync issue' }[st.state] || ''}`;
+  }
+}
+
+async function withSyncError(fn) {
+  syncError = '';
+  try {
+    await fn();
+  } catch (err) {
+    syncError = err.message || String(err);
+  }
+  refreshSyncUi();
 }
 
 // ---------- Sheets ----------
@@ -921,7 +984,7 @@ async function importBackup(file) {
   let data;
   try { data = JSON.parse(await file.text()); } catch { data = null; }
   if (!data || data.app !== 'recipe-box' || !data.state) { toast('That file is not a Recipe Box backup'); return; }
-  if (!confirm('Replace everything on this device with this backup?')) return;
+  if (!confirm(cloud.isSignedIn() ? 'Replace everything in your account (on every phone) with this backup?' : 'Replace everything on this device with this backup?')) return;
   await eraseAll(false);
   state = normalizeState(data.state);
   for (const [id, url] of Object.entries(data.photos || {})) {
@@ -929,6 +992,7 @@ async function importBackup(file) {
     await db.set(`photo:${id}`, url);
   }
   await db.set('state', state);
+  cloud.schedulePush(0);
   render();
   toast(`Restored ${state.recipes.length} recipe${state.recipes.length === 1 ? '' : 's'}`);
 }
@@ -1122,9 +1186,26 @@ function handleAction(el, e) {
     case 'export':
       exportBackup();
       break;
-    case 'erase':
-      if (confirm('Erase all recipes, photos, your grocery list and pantry from this device? This cannot be undone.')) {
-        eraseAll().then(() => toast('All data erased'));
+    case 'erase': {
+      const where = cloud.isSignedIn() ? 'from your account on every phone' : 'from this device';
+      if (confirm(`Erase all recipes, photos, your grocery list and pantry ${where}? This cannot be undone.`)) {
+        eraseAll().then(() => { cloud.schedulePush(0); toast('All data erased'); });
+      }
+      break;
+    }
+    case 'sign-in-google':
+      toast('Opening Google sign-in…');
+      withSyncError(() => cloud.signInWithGoogle());
+      break;
+    case 'reset-password': {
+      const email = document.querySelector('[data-form="email-auth"] [name=email]')?.value.trim();
+      if (!email) { syncError = 'Type your email above first, then tap “Forgot password?”.'; refreshSyncUi(); break; }
+      withSyncError(async () => { await cloud.resetPassword(email); toast('Password reset email sent'); });
+      break;
+    }
+    case 'sign-out':
+      if (confirm('Sign out? Your recipes stay safe in your account. This phone’s copy will be cleared until you sign in again.')) {
+        cloud.signOutCloud().then(() => eraseAll()).then(() => { refreshSyncUi(); toast('Signed out'); });
       }
       break;
     default:
@@ -1156,6 +1237,14 @@ document.addEventListener('submit', e => {
     for (const line of lines) addManualItem(state, line, lines.length === 1 ? amounts : null);
     ui.focusAfterRender = 'grocery-input';
     commit();
+  } else if (form.dataset.form === 'email-auth') {
+    e.preventDefault();
+    const create = e.submitter && e.submitter.value === 'create';
+    const email = form.elements.email.value.trim();
+    const password = form.elements.password.value;
+    toast(create ? 'Creating your account…' : 'Signing in…');
+    document.activeElement?.blur();
+    withSyncError(() => cloud.signInWithEmail(email, password, create));
   } else if (form.dataset.form === 'add-pantry') {
     e.preventDefault();
     const text = form.elements.entry.value.trim();
@@ -1244,6 +1333,20 @@ async function start() {
     console.error('Could not load saved data', err);
   }
   render();
+  cloud.initCloud({
+    getState: () => state,
+    photos,
+    // Changes arrived from another phone: save them here and redraw.
+    onRemote: () => { db.set('state', state); render(); },
+    onStatus: () => {
+      const signedIn = cloud.isSignedIn();
+      if (signedIn) syncError = '';
+      // Signing in or out changes text elsewhere on Settings (e.g. what "Erase" deletes).
+      if (signedIn !== wasSignedIn && route().name === 'settings') render();
+      wasSignedIn = signedIn;
+      refreshSyncUi();
+    },
+  });
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     // When an update takes over, reload once so the new version shows right away.
