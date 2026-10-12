@@ -268,6 +268,9 @@ function explain(err) {
     'auth/operation-not-supported-in-this-environment': 'Google sign-in isn’t available here. Use email sign-in instead.',
     'auth/unauthorized-domain': 'This website isn’t allowed to sign in yet. In Firebase → Authentication → Settings → Authorized domains, add 9jr9000.github.io.',
     'auth/operation-not-allowed': 'This sign-in method is turned off. In Firebase → Authentication → Sign-in method, turn it on.',
+    'auth/configuration-not-found': 'Sign-in isn’t switched on in Firebase yet. In Firebase → Build → Authentication, click “Get started”, then under Sign-in method turn on Email/Password (and Google if you want it).',
+    'auth/admin-restricted-operation': 'New accounts are blocked. In Firebase → Authentication → Settings → User actions, allow “Enable create (sign-up)”.',
+    'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'The app’s Firebase settings don’t match your project. Check the config in js/firebase-config.js.',
     'auth/invalid-credential': 'Wrong email or password.',
     'auth/wrong-password': 'Wrong email or password.',
     'auth/user-not-found': 'No account with that email. Tap “Create Account” to make one.',
@@ -283,6 +286,7 @@ function explain(err) {
     unavailable: 'Can’t reach the cloud right now. Changes are saved on this phone and will sync later.',
   };
   if (messages[code]) return messages[code];
+  if (/CONFIGURATION_NOT_FOUND/i.test(String(err && err.message))) return messages['auth/configuration-not-found'];
   if (/database .* does not exist|NOT_FOUND/i.test(String(err && err.message))) return messages['not-found'];
   return `Something went wrong (${code || (err && err.message) || 'unknown error'}).`;
 }
