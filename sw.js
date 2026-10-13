@@ -1,8 +1,8 @@
 // Offline support: always try the network, fall back to the cached app when offline.
-const CACHE = 'recipe-box-v7';
+const CACHE = 'recipe-box-v8';
 const ASSETS = [
   './', 'index.html', 'css/styles.css', 'js/app.js', 'js/db.js', 'js/ingredients.js', 'js/sync.js',
-  'js/cloud.js', 'js/cloudsync.js', 'js/firebase-config.js',
+  'js/cloud.js', 'js/cloudsync.js', 'js/importer.js', 'js/firebase-config.js',
   'js/vendor/firebase/firebase-app.js', 'js/vendor/firebase/firebase-auth.js', 'js/vendor/firebase/firebase-firestore.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];

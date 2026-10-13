@@ -1,5 +1,6 @@
 import * as db from './db.js';
 import * as cloud from './cloud.js';
+import { extractUrls, draftFromLink, fetchViaRelays } from './importer.js';
 import {
   parseIngredient, parseIngredients, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -12,7 +13,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '7';
+const APP_VERSION = '8';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -32,6 +33,7 @@ const I = {
   dish: svg('<path d="M3 13h18a9 9 0 0 1-18 0Z"/><path d="M12 4v3M8 5.5 9 8M16 5.5 15 8"/>'),
   home: svg('<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/>'),
   clipboard: svg('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>'),
+  download: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'),
   more: svg('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>'),
 };
 
@@ -277,8 +279,11 @@ function filteredRecipes() {
 function recipeCardsHtml() {
   if (!state.recipes.length) {
     return `<div class="empty">${I.book}<h2>No recipes yet</h2>
-      <p>Add your own recipes — type them in or paste them from anywhere.</p>
-      <a class="btn primary" href="#/new">${I.plus} Add Recipe</a></div>`;
+      <p>Add your own recipes — type them in, or import them from recipe websites and TikTok links.</p>
+      <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+        <a class="btn primary" href="#/new">${I.plus} Add Recipe</a>
+        <button class="btn" data-action="open-link-import">${I.download} Import from Links</button>
+      </div></div>`;
   }
   const list = filteredRecipes();
   if (!list.length) return `<div class="empty"><h2>No matches</h2><p>Nothing matches your search.</p></div>`;
@@ -299,6 +304,7 @@ function viewRecipes() {
     <header class="topbar">
       <div class="topbar-row">
         <h1>${esc(ui.category || 'Recipes')}<span class="sub">${state.recipes.length} recipe${state.recipes.length === 1 ? '' : 's'}</span></h1>
+        <button class="icon-btn" data-action="open-link-import" aria-label="Import from links" title="Import from websites or TikTok">${I.download}</button>
         <a class="icon-btn" href="#/new" aria-label="Add recipe" title="Add recipe">${I.plus}</a>
       </div>
       ${state.recipes.length ? `<label class="search">${I.search}<span class="sr-only">Search recipes</span>
@@ -933,6 +939,75 @@ function openPasteIngredients() {
   });
 }
 
+// ---------- Import from links ----------
+function openLinkImport(prefill = '', autoStart = false) {
+  openSheet('Import Recipes', `
+    <p style="margin:0 0 10px;font-size:13px">Paste links to recipe websites or TikTok videos — one or many, one per line. Each becomes a recipe you can edit.</p>
+    <textarea class="input" name="links" rows="7" placeholder="https://www.tiktok.com/@chef/video/…&#10;https://www.allrecipes.com/recipe/…" required>${esc(prefill)}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <button type="button" class="btn small" data-action="paste-links">${I.clipboard} Paste</button>
+    </div>
+    <p class="hint" style="font-size:11px;color:var(--muted);margin:12px 0 0">On TikTok: tap <b>Share → Copy link</b>, then tap Paste here. Recipes in the caption come in automatically; if the recipe is only spoken in the video, you'll get the name, photo and link to fill in the rest.</p>`, {
+    confirmLabel: 'Import',
+    footHtml: `<button type="submit" class="btn primary block">${I.download} Import</button>`,
+    onConfirm: form => {
+      const urls = extractUrls(new FormData(form).get('links'));
+      if (!urls.length) { toast('No links found — paste a link starting with https://'); return false; }
+      runLinkImport(urls);
+      return false; // keep the sheet open to show progress
+    },
+  });
+  if (autoStart) $sheet.querySelector('form').requestSubmit();
+}
+
+async function runLinkImport(urls) {
+  const body = $sheet.querySelector('.sheet-body');
+  const foot = $sheet.querySelector('.sheet-foot');
+  const head = $sheet.querySelector('.sheet-head button[type=submit]');
+  if (head) head.hidden = true;
+  if (foot) foot.innerHTML = '<button type="button" class="btn block" data-action="close-sheet" disabled>Importing…</button>';
+  body.innerHTML = `<ul class="pick-list import-list">${urls.map((u, i) => `<li id="imp-${i}"><span class="txt"><b>Loading…</b><br><small>${esc(u)}</small></span></li>`).join('')}</ul>`;
+  let saved = 0;
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    const row = document.getElementById(`imp-${i}`);
+    const setRow = html => { if (row) row.innerHTML = html; };
+    const existing = state.recipes.find(r => r.source === url);
+    if (existing) {
+      setRow(`<span class="txt"><b>Already in your recipes</b><br><small>${esc(existing.name)}</small></span><a class="btn small" href="#/recipe/${encodeURIComponent(existing.id)}">View</a>`);
+      continue;
+    }
+    try {
+      const d = await draftFromLink(url);
+      const recipe = saveRecipe(state, {
+        id: uid(), name: d.name || 'Imported recipe', source: d.source || url, ingredients: d.ingredients,
+        directions: d.directions, notes: d.notes, servings: d.servings, prepTime: d.prepTime, cookTime: d.cookTime,
+        categories: [], rating: 0,
+      });
+      if (d.imageUrl) {
+        try {
+          const blob = await fetchViaRelays(d.imageUrl, 'blob');
+          const dataUrl = await resizeImage(blob);
+          photos.set(recipe.id, dataUrl);
+          await db.set(`photo:${recipe.id}`, dataUrl);
+          recipe.photo = true;
+        } catch { /* recipe still imports without a photo */ }
+      }
+      commit();
+      saved++;
+      const missing = !d.ingredients ? ' — add the ingredients' : '';
+      setRow(`<span class="txt"><b>${esc(recipe.name)}</b><br><small>${recipe.photo ? 'Photo, ' : ''}${d.ingredients ? `${d.ingredients.split('\n').length} ingredients` : 'no ingredients found'}${d.directions ? `, ${d.directions.split('\n').length} steps` : ''}${missing}</small></span>
+        <a class="btn small" href="#/${d.ingredients ? 'recipe' : 'edit'}/${encodeURIComponent(recipe.id)}">${d.ingredients ? 'View' : 'Edit'}</a>`);
+    } catch (err) {
+      console.warn('Import failed', url, err);
+      setRow(`<span class="txt"><b>Couldn’t read this link</b><br><small>${esc(url)}</small><br><small>Open it, copy the recipe text, and use “Paste recipe text” on a new recipe.</small></span>
+        <a class="btn small" href="#/new">New</a>`);
+    }
+  }
+  if (foot) foot.innerHTML = `<button type="button" class="btn primary block" data-action="close-sheet">Done${saved ? ` — ${saved} imported` : ''}</button>`;
+  if (saved && route().name !== 'recipes') go('#/recipes');
+}
+
 function openImport() {
   openSheet('Paste Recipe', `
     <p style="margin:0 0 10px;color:var(--muted);font-size:14px">Paste a recipe copied from a website, message or note. The name, ingredients and directions will be filled in for you to review.</p>
@@ -1076,6 +1151,17 @@ function handleAction(el, e) {
     case 'open-import':
       openImport();
       break;
+    case 'open-link-import':
+      openLinkImport();
+      break;
+    case 'paste-links': {
+      const box = $sheet.querySelector('textarea[name=links]');
+      if (!navigator.clipboard || !navigator.clipboard.readText) { box.focus(); toast('Long-press the box and choose Paste'); break; }
+      navigator.clipboard.readText().then(t => {
+        box.value = [box.value.trim(), t.trim()].filter(Boolean).join('\n');
+      }).catch(() => { box.focus(); toast('Long-press the box and choose Paste'); });
+      break;
+    }
     case 'add-ing-row':
       appendIngredientRow(ingredientRowHtml());
       break;
@@ -1333,6 +1419,13 @@ async function start() {
     console.error('Could not load saved data', err);
   }
   render();
+  const shared = new URLSearchParams(location.search);
+  const sharedUrls = extractUrls([shared.get('url'), shared.get('text'), shared.get('title')].filter(Boolean).join(' '));
+  if (sharedUrls.length) {
+    history.replaceState(null, '', location.pathname + '#/recipes');
+    render();
+    openLinkImport(sharedUrls.join('\n'), true);
+  }
   cloud.initCloud({
     getState: () => state,
     photos,
