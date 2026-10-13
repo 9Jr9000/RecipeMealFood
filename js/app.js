@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import * as cloud from './cloud.js';
 import { extractUrls, draftFromLink, fetchViaRelays } from './importer.js';
+import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories } from './categories.js';
 import {
   parseIngredient, parseIngredients, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -13,7 +14,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '8';
+const APP_VERSION = '9';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -42,7 +43,7 @@ let state = emptyState();
 const photos = new Map(); // recipeId -> data URL
 const ui = {
   search: '',
-  category: null,
+  filters: {}, // category group -> chosen category, e.g. { Meal: 'Dinner', Protein: 'Chicken' }
   sort: localPref('sort', 'name'),
   groceryGroup: localPref('groceryGroup', 'aisle'),
   pantrySearch: '',
@@ -218,20 +219,20 @@ function renderNav(r) {
     ['settings', 'Settings', I.gear, null],
   ];
   document.getElementById('side-links').innerHTML = links.map(([k, label, icon, n]) => `
-    <a class="nav-link ${section === k && !(k === 'recipes' && ui.category) ? 'active' : ''}" href="#/${k}" data-action="nav-all">
+    <a class="nav-link ${section === k && !(k === 'recipes' && hasFilters()) ? 'active' : ''}" href="#/${k}" data-action="nav-all">
       ${icon}<span>${label}</span>${n ? `<span class="count">${n}</span>` : ''}
     </a>`).join('');
   document.getElementById('tabbar').innerHTML = links.map(([k, label, icon, n]) => `
     <a class="tab ${section === k ? 'active' : ''}" href="#/${k}">
       ${icon}<span>${label}</span>${k === 'grocery' && n ? `<span class="badge">${n}</span>` : ''}
     </a>`).join('');
-  const cats = allCategories(state);
-  document.getElementById('side-categories').innerHTML = cats.length ? `
-    <h4>Categories</h4>
-    ${cats.map(c => `
-      <a class="nav-link ${section === 'recipes' && ui.category === c ? 'active' : ''}" href="#/recipes" data-action="set-category" data-cat="${esc(c)}">
-        <span>${esc(c)}</span><span class="count">${state.recipes.filter(r => (r.categories || []).includes(c)).length}</span>
-      </a>`).join('')}` : '';
+  const onlyFilter = Object.values(ui.filters).length === 1 ? Object.values(ui.filters)[0] : null;
+  document.getElementById('side-categories').innerHTML = categoryGroupsInUse().map(g => `
+    <h4>${esc(g.name)}</h4>
+    ${g.items.map(c => `
+      <a class="nav-link ${section === 'recipes' && onlyFilter === c ? 'active' : ''}" href="#/recipes" data-action="set-category" data-cat="${esc(c)}" data-only="1">
+        <span>${esc(c)}</span><span class="count">${countIn(c)}</span>
+      </a>`).join('')}`).join('');
 }
 
 // ---------- Views ----------
@@ -259,11 +260,23 @@ function render() {
   }
 }
 
+// Categories in use, grouped (Meal / Protein / Type / My Categories), in preset order.
+function categoryGroupsInUse() {
+  const used = allCategories(state);
+  const groups = CATEGORY_GROUPS.map(g => ({ name: g.name, items: g.items.filter(c => used.includes(c)) }));
+  groups.push({ name: 'My Categories', items: used.filter(c => !PRESET_CATEGORIES.includes(c)) });
+  return groups.filter(g => g.items.length);
+}
+function countIn(cat) { return state.recipes.filter(r => (r.categories || []).includes(cat)).length; }
+function hasFilters() { return Object.keys(ui.filters).length > 0; }
+function untaggedRecipes() { return state.recipes.filter(r => !(r.categories || []).length); }
+
 // Recipes list
 function filteredRecipes() {
   const q = ui.search.trim().toLowerCase();
   let list = state.recipes.filter(r => {
-    if (ui.category && !(r.categories || []).includes(ui.category)) return false;
+    // Every chosen filter must match (e.g. Dinner AND Chicken).
+    if (Object.values(ui.filters).some(c => !(r.categories || []).includes(c))) return false;
     if (!q) return true;
     return [r.name, r.ingredients, (r.categories || []).join(' '), r.source]
       .some(f => String(f || '').toLowerCase().includes(q));
@@ -286,7 +299,7 @@ function recipeCardsHtml() {
       </div></div>`;
   }
   const list = filteredRecipes();
-  if (!list.length) return `<div class="empty"><h2>No matches</h2><p>Nothing matches your search.</p></div>`;
+  if (!list.length) return `<div class="empty"><h2>No matches</h2><p>No recipes match ${hasFilters() ? 'these categories' : 'your search'}.</p>${hasFilters() ? '<button class="btn" data-action="clear-filters">Show All Recipes</button>' : ''}</div>`;
   return `<div class="recipe-grid">${list.map(r => {
     const time = [r.prepTime && `Prep ${r.prepTime}`, r.cookTime && `Cook ${r.cookTime}`].filter(Boolean)[0] || '';
     return `<a class="card" href="#/recipe/${encodeURIComponent(r.id)}">
@@ -298,12 +311,16 @@ function recipeCardsHtml() {
 }
 
 function viewRecipes() {
-  const cats = allCategories(state);
-  if (ui.category && !cats.includes(ui.category)) ui.category = null;
+  const groups = categoryGroupsInUse();
+  // Drop filters whose category no longer exists.
+  for (const [g, c] of Object.entries(ui.filters)) if (!countIn(c)) delete ui.filters[g];
+  const chosen = Object.values(ui.filters);
+  const shown = filteredRecipes().length;
+  const untagged = untaggedRecipes().length;
   $view.innerHTML = `
     <header class="topbar">
       <div class="topbar-row">
-        <h1>${esc(ui.category || 'Recipes')}<span class="sub">${state.recipes.length} recipe${state.recipes.length === 1 ? '' : 's'}</span></h1>
+        <h1>${esc(chosen.length ? chosen.join(' · ') : 'Recipes')}<span class="sub">${chosen.length ? `${shown} of ${state.recipes.length}` : state.recipes.length} recipe${state.recipes.length === 1 ? '' : 's'}</span></h1>
         <button class="icon-btn" data-action="open-link-import" aria-label="Import from links" title="Import from websites or TikTok">${I.download}</button>
         <a class="icon-btn" href="#/new" aria-label="Add recipe" title="Add recipe">${I.plus}</a>
       </div>
@@ -311,10 +328,14 @@ function viewRecipes() {
         <input id="recipe-search" type="search" placeholder="Search recipes or ingredients" value="${esc(ui.search)}" autocomplete="off"></label>` : ''}
     </header>
     <div class="content">
-      ${cats.length ? `<div class="chips">
-        <button class="chip ${!ui.category ? 'active' : ''}" data-action="set-category" data-cat="">All</button>
-        ${cats.map(c => `<button class="chip ${ui.category === c ? 'active' : ''}" data-action="set-category" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}
+      ${groups.length ? `<div class="filter-panel">
+        ${groups.map(g => `<div class="filter-row"><span class="filter-label">${esc(g.name)}</span><div class="chips">
+          ${g.items.map(c => `<button class="chip ${ui.filters[g.name] === c ? 'active' : ''}" data-action="set-category" data-cat="${esc(c)}">${esc(c)} <span class="chip-n">${countIn(c)}</span></button>`).join('')}
+        </div></div>`).join('')}
+        ${chosen.length ? `<button class="link-btn" data-action="clear-filters">✕ Clear filters</button>` : ''}
       </div>` : ''}
+      ${untagged ? `<div class="banner">${I.book}<span class="grow">${untagged} recipe${untagged === 1 ? ' has' : 's have'} no categories yet.</span>
+        <button class="btn small" data-action="auto-sort">Sort Automatically</button></div>` : ''}
       ${state.recipes.length ? `<div class="list-toolbar"><span></span>
         <label>Sort <select id="recipe-sort">
           <option value="name" ${ui.sort === 'name' ? 'selected' : ''}>Name</option>
@@ -483,10 +504,10 @@ function viewEditor(id) {
         </div>
       </div>
       <div class="field"><span>Rating</span><div class="star-input" id="star-input">${starButtons(editorRating)}</div></div>
-      <div class="field"><span>Categories</span>
-        ${cats.length ? `<div class="cat-picks">${cats.map(c => `<label class="chip check-chip"><input type="checkbox" name="cat" value="${esc(c)}" ${(r?.categories || []).includes(c) ? 'checked' : ''}>${esc(c)}</label>`).join('')}</div>` : ''}
-        <input class="input" name="newcats" placeholder="${cats.length ? 'Add a new category' : 'e.g. Dinner, Chicken'}">
-        <div class="hint">${cats.length ? 'Tap to pick. ' : ''}Separate new categories with commas.</div></div>
+      <div class="field" id="cat-field"><span>Categories</span>
+        ${categoryPickerHtml(r?.categories || [], cats)}
+        <input class="input" name="newcats" placeholder="Add your own category (e.g. Grandma’s, Meal Prep)">
+        <div class="hint" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">Tap to pick. <button type="button" class="btn small" data-action="suggest-cats">Suggest from Ingredients</button></div></div>
       <div class="row-fields">
         <label class="field"><span>Servings</span>${choiceSelect('servings', r?.servings || '', SERVING_OPTIONS, '—')}</label>
         <label class="field"><span>Prep time</span>${choiceSelect('prepTime', r?.prepTime || '', TIME_OPTIONS, '—')}</label>
@@ -506,6 +527,14 @@ function viewEditor(id) {
       <button class="btn primary block" type="submit">Save Recipe</button>
     </div>
     </form>`;
+}
+
+function categoryPickerHtml(selected, used) {
+  const custom = [...new Set([...used, ...selected])].filter(c => !PRESET_CATEGORIES.includes(c));
+  const groups = [...CATEGORY_GROUPS, ...(custom.length ? [{ name: 'My Categories', items: custom }] : [])];
+  return groups.map(g => `<div class="filter-row"><span class="filter-label">${esc(g.name)}</span><div class="cat-picks">
+    ${g.items.map(c => `<label class="chip check-chip"><input type="checkbox" name="cat" value="${esc(c)}" ${selected.includes(c) ? 'checked' : ''}>${esc(c)}</label>`).join('')}
+  </div></div>`).join('');
 }
 
 function ingredientRowHtml(p = null) {
@@ -572,6 +601,7 @@ async function submitEditor(form) {
     rating: editorRating,
   };
   if (!data.name) return;
+  if (!id && !data.categories.length) data.categories = suggestCategories(data);
   const saved = saveRecipe(state, id ? { ...data, id } : { ...data, id: uid() });
   if (editorPhoto !== undefined) {
     if (editorPhoto) {
@@ -982,7 +1012,7 @@ async function runLinkImport(urls) {
       const recipe = saveRecipe(state, {
         id: uid(), name: d.name || 'Imported recipe', source: d.source || url, ingredients: d.ingredients,
         directions: d.directions, notes: d.notes, servings: d.servings, prepTime: d.prepTime, cookTime: d.cookTime,
-        categories: [], rating: 0,
+        categories: suggestCategories(d), rating: 0,
       });
       if (d.imageUrl) {
         try {
@@ -996,7 +1026,7 @@ async function runLinkImport(urls) {
       commit();
       saved++;
       const missing = !d.ingredients ? ' — add the ingredients' : '';
-      setRow(`<span class="txt"><b>${esc(recipe.name)}</b><br><small>${recipe.photo ? 'Photo, ' : ''}${d.ingredients ? `${d.ingredients.split('\n').length} ingredients` : 'no ingredients found'}${d.directions ? `, ${d.directions.split('\n').length} steps` : ''}${missing}</small></span>
+      setRow(`<span class="txt"><b>${esc(recipe.name)}</b><br><small>${recipe.categories.length ? `${esc(recipe.categories.join(', '))} · ` : ''}${recipe.photo ? 'Photo, ' : ''}${d.ingredients ? `${d.ingredients.split('\n').length} ingredients` : 'no ingredients found'}${d.directions ? `, ${d.directions.split('\n').length} steps` : ''}${missing}</small></span>
         <a class="btn small" href="#/${d.ingredients ? 'recipe' : 'edit'}/${encodeURIComponent(recipe.id)}">${d.ingredients ? 'View' : 'Edit'}</a>`);
     } catch (err) {
       console.warn('Import failed', url, err);
@@ -1096,12 +1126,39 @@ function handleAction(el, e) {
   const recipe = r.name === 'recipe' ? recipeById(r.id) : null;
   switch (action) {
     case 'nav-all':
-      if (el.getAttribute('href') === '#/recipes') { ui.category = null; if (route().name === 'recipes') render(); }
+      if (el.getAttribute('href') === '#/recipes') { ui.filters = {}; if (route().name === 'recipes') render(); }
       break;
-    case 'set-category':
-      ui.category = el.dataset.cat || null;
+    case 'set-category': {
+      const cat = el.dataset.cat;
+      const group = groupOf(cat);
+      if (el.dataset.only) ui.filters = { [group]: cat }; // sidebar: show just this category
+      else if (ui.filters[group] === cat) delete ui.filters[group]; // tap again to turn off
+      else ui.filters[group] = cat; // one choice per group; groups combine (Dinner + Chicken)
       if (route().name !== 'recipes') go('#/recipes'); else render();
       break;
+    }
+    case 'clear-filters':
+      ui.filters = {};
+      render();
+      break;
+    case 'auto-sort': {
+      const list = untaggedRecipes();
+      let n = 0;
+      for (const r of list) {
+        const cats = suggestCategories(r);
+        if (cats.length) { saveRecipe(state, { ...r, categories: cats }); n++; }
+      }
+      commit();
+      toast(n ? `Sorted ${n} recipe${n === 1 ? '' : 's'} into categories` : 'Couldn’t guess categories — add them when you edit a recipe');
+      break;
+    }
+    case 'suggest-cats': {
+      const f = document.getElementById('recipe-form');
+      const picks = suggestCategories({ name: f.elements.name.value, ingredients: editorIngredients(), directions: f.elements.directions.value });
+      for (const cb of f.querySelectorAll('input[name=cat]')) if (picks.includes(cb.value)) cb.checked = true;
+      toast(picks.length ? `Suggested: ${picks.join(', ')}` : 'No suggestions — add a name and ingredients first');
+      break;
+    }
     case 'detail-tab':
       ui.detailTab = el.dataset.tab;
       render();

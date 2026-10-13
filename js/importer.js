@@ -139,7 +139,7 @@ function metaTags(html) {
 }
 
 function emptyDraft(url) {
-  return { name: '', source: url || '', imageUrl: '', ingredients: '', directions: '', servings: '', prepTime: '', cookTime: '', notes: '' };
+  return { name: '', source: url || '', imageUrl: '', ingredients: '', directions: '', servings: '', prepTime: '', cookTime: '', notes: '', hints: '' };
 }
 
 // Reads a recipe out of a web page's HTML. Returns null when nothing recipe-like is found.
@@ -156,6 +156,8 @@ export function recipeFromHtml(html, url = '') {
     d.servings = yieldText(recipe.recipeYield);
     d.prepTime = isoDuration(recipe.prepTime);
     d.cookTime = isoDuration(recipe.cookTime) || (!d.prepTime ? isoDuration(recipe.totalTime) : '');
+    // The site's own labels ("Main Course", "Mexican", keywords) help pick categories.
+    d.hints = [recipe.recipeCategory, recipe.recipeCuisine, recipe.keywords].flatMap(asArray).map(x => clean(x)).join(', ');
     const desc = clean(recipe.description || '');
     if (desc && desc.length < 600) d.notes = desc;
     return d;

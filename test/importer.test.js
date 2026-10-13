@@ -14,7 +14,7 @@ const WORDPRESS_PAGE = `<!doctype html><html><head>
  {"@type":"Article","headline":"Best Chicken Tacos"},
  {"@type":"Recipe","name":"Best Chicken Tacos","image":["https://example.com/tacos-1x1.jpg","https://example.com/tacos-16x9.jpg"],
   "description":"Smoky, juicy chicken tacos ready in 30 minutes.",
-  "recipeYield":["4","4 servings"],"prepTime":"PT10M","cookTime":"PT20M","totalTime":"PT30M",
+  "recipeCategory":"Main Course","recipeCuisine":["Mexican"],"keywords":"tacos, chicken","recipeYield":["4","4 servings"],"prepTime":"PT10M","cookTime":"PT20M","totalTime":"PT30M",
   "recipeIngredient":["1 &frac12; lbs chicken thighs","8 corn tortillas","1 tsp ground cumin","Juice of 1 lime"],
   "recipeInstructions":[{"@type":"HowToStep","text":"Season the chicken with cumin."},{"@type":"HowToStep","text":"Grill 6&ndash;8 minutes per side."},{"@type":"HowToStep","text":"Serve in warm tortillas with lime."}]}
 ]}</script></head><body><p>My life story...</p></body></html>`;
@@ -68,6 +68,7 @@ test('reads a recipe website (schema.org in @graph)', () => {
   assert.equal(d.cookTime, '20 min');
   assert.equal(d.source, 'https://example.com/tacos');
   assert.match(d.notes, /Smoky/);
+  assert.equal(d.hints, 'Main Course, Mexican, tacos, chicken');
 });
 
 test('reads recipes with step sections', () => {

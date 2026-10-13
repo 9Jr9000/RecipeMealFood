@@ -621,3 +621,29 @@ select.convert {
 .or-rule { display: flex; align-items: center; gap: 10px; margin: 14px 14px 12px; color: var(--ink-soft); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
 .or-rule::before, .or-rule::after { content: ""; flex: 1; border-top: 1px dotted var(--muted-indigo); }
 #sync-card form .btns { align-items: center; }
+
+/* ---------- Category filters (Meal / Protein / Type) ---------- */
+.filter-panel {
+  margin-top: 10px; padding: 6px 10px 8px; background: var(--platinum);
+  border: 1px solid var(--chrome); border-radius: 6px; box-shadow: var(--bevel-plate);
+}
+.filter-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.filter-row + .filter-row { border-top: 1px dotted var(--muted-indigo); }
+.filter-label {
+  flex: none; width: 64px; font: 10px var(--pixel); text-transform: uppercase; color: var(--ink-soft);
+}
+.filter-row .chips { flex: 1; min-width: 0; padding: 6px 0; }
+.chip-n { font: 9px var(--pixel); opacity: .7; }
+.filter-panel .link-btn { margin-top: 2px; font-size: 11px; }
+#cat-field .filter-row { align-items: flex-start; padding: 6px 0; }
+#cat-field .filter-label { padding-top: 8px; }
+#cat-field .cat-picks { flex: 1; margin: 0; }
+#cat-field > .input { margin-top: 6px; }
+@media (max-width: 420px) {
+  #cat-field .filter-row { flex-direction: column; align-items: stretch; gap: 4px; }
+  #cat-field .filter-label { padding-top: 0; }
+}
+/* Wrap filter chips so every category is visible without sideways scrolling. */
+.filter-panel .chips { flex-wrap: wrap; overflow: visible; gap: 6px; }
+.filter-panel .chip { padding: 5px 8px; font-size: 10.5px; }
+@media (max-width: 420px) { .filter-label { width: 52px; } }
