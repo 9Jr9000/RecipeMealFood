@@ -75,7 +75,7 @@ test('reads recipes with step sections', () => {
   const d = recipeFromHtml(SECTION_PAGE);
   assert.equal(d.name, 'Lemon Cake & Glaze');
   assert.equal(d.imageUrl, 'https://example.com/cake.jpg');
-  assert.equal(d.directions.split('\n').length, 3);
+  assert.deepEqual(d.directions.split('\n'), ['Cake:', 'Mix flour and sugar.', 'Bake 40 minutes.', 'Glaze:', 'Whisk sugar and lemon.']);
   assert.equal(d.servings, '8');
   assert.equal(d.cookTime, '1 hr 15 min');
 });

@@ -3,7 +3,7 @@ import * as cloud from './cloud.js';
 import { extractUrls, draftFromLink, fetchViaRelays } from './importer.js';
 import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories } from './categories.js';
 import {
-  parseIngredient, parseIngredients, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
+  parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
   isConvertible, convertAmount, CONVERT_TARGETS, buildLine, ingredientAmounts, totalAmount,
 } from './ingredients.js';
@@ -14,7 +14,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '9';
+const APP_VERSION = '10';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -253,6 +253,7 @@ function render() {
   $view.dataset.view = `${r.name}/${r.id}`;
   $view.dataset.section = views[r.name] ? r.name : 'recipes'; // picks the hero tint
   (views[r.name] || viewRecipes)();
+  if (r.name === 'new' || r.name === 'edit') refreshSections();
   if (ui.focusAfterRender) {
     const el = document.getElementById(ui.focusAfterRender);
     ui.focusAfterRender = null;
@@ -466,7 +467,12 @@ function viewRecipe(id) {
       </section>
       <section ${tab !== 'directions' ? 'hidden' : ''}>
         <h2>Directions</h2>
-        ${steps.length ? `<ol class="steps">${steps.map((s, i) => `<li class="${activeStep === i ? 'active' : activeStep > i ? 'done' : ''}" data-action="step" data-i="${i}">${esc(s)}</li>`).join('')}</ol>` : '<p class="fact">No directions yet.</p>'}
+        ${steps.length ? `<ol class="steps">${(() => {
+          let n = 0; // step numbers restart in each section
+          return steps.map((s, i) => isSectionHeader(s)
+            ? (n = 0, `<li class="step-header">${esc(s.replace(/:$/, '').replace(/^#+\s*/, ''))}</li>`)
+            : `<li class="${activeStep === i ? 'active' : activeStep > i ? 'done' : ''}" data-action="step" data-i="${i}" data-n="${++n}">${esc(s)}</li>`).join('');
+        })()}</ol>` : '<p class="fact">No directions yet.</p>'}
       </section>
       ${r.notes ? `<section class="notes-sec" ${tab !== 'notes' ? 'hidden' : ''}><h2>Notes</h2><div class="notes">${esc(r.notes)}</div></section>` : ''}
     </div>
@@ -515,14 +521,15 @@ function viewEditor(id) {
       </div>
       <label class="field"><span>Source</span><input name="source" value="${esc(r?.source)}" placeholder="Website, book, or person"></label>
       <div class="field"><span>Ingredients</span>
-        <div id="ing-rows" class="ing-rows">${ingredientRowsHtml(r ? parseIngredients(r.ingredients) : [])}</div>
+        <div class="hint" style="margin:0 0 8px">Making more than one thing (like a marinade, a sauce and rice)? Use <b>Add Another Section</b> to split the list.</div>
+        <div id="ing-rows" class="ing-sections">${sectionsHtml(r ? parseIngredients(r.ingredients) : [])}</div>
         <div class="ing-actions">
-          <button type="button" class="btn small" data-action="add-ing-row">${I.plus} Ingredient</button>
-          <button type="button" class="btn small" data-action="add-ing-header">${I.plus} Section</button>
+          <button type="button" class="btn" data-action="add-section">${I.plus} Add Another Section</button>
           <button type="button" class="btn small" data-action="paste-ingredients">${I.clipboard} Paste List</button>
         </div></div>
       <label class="field"><span>Directions</span>
-        <textarea name="directions" rows="10" placeholder="One step per line">${esc(r?.directions)}</textarea></label>
+        <textarea name="directions" rows="10" placeholder="One step per line&#10;&#10;To split into parts, add a line ending in “:”&#10;For the sauce:&#10;Whisk everything together.">${esc(r?.directions)}</textarea>
+        <div class="hint">One step per line. To split the steps into parts, add a line ending in “:” such as “For the sauce:”.</div></label>
       <label class="field"><span>Notes</span><textarea name="notes" rows="4">${esc(r?.notes)}</textarea></label>
       <button class="btn primary block" type="submit">Save Recipe</button>
     </div>
@@ -539,46 +546,87 @@ function categoryPickerHtml(selected, used) {
 
 function ingredientRowHtml(p = null) {
   const remove = `<button type="button" class="icon-btn" data-action="remove-ing-row" aria-label="Remove">${I.x}</button>`;
-  if (p && p.header) {
-    return `<div class="ing-row header-row" data-kind="header">
-      <input class="input" value="${esc(p.header)}" placeholder="Section name, e.g. For the sauce">${remove}</div>`;
-  }
   const name = !p ? '' : p.qty === null && !p.unit ? p.raw : p.name;
   return `<div class="ing-row" data-kind="item" data-max="${p && p.qtyMax !== null ? p.qtyMax : ''}">
     ${amountPicker(p ? ingredientAmounts(p) : [])}
     <input class="input ing-name" value="${esc(name)}" placeholder="Ingredient" enterkeyhint="next">${remove}</div>`;
 }
 
-function ingredientRowsHtml(parsed) {
-  const rows = parsed.map(ingredientRowHtml);
-  // Always leave an empty row (a few for a new recipe) ready to fill in.
-  const blanks = parsed.length ? 1 : 3;
+// Ingredient lists are split into sections ("Marinade", "Sauce", ...). They're stored as plain
+// lines, with a section name written as a line ending in ":".
+function toSections(parsed) {
+  const sections = [{ title: '', items: [] }];
+  for (const p of parsed) {
+    if (p.header !== undefined) sections.push({ title: p.header, items: [] });
+    else sections[sections.length - 1].items.push(p);
+  }
+  if (sections.length > 1 && !sections[0].items.length) sections.shift();
+  return sections;
+}
+
+function sectionHtml(sec, blanks = 1) {
+  const rows = sec.items.map(ingredientRowHtml);
   for (let i = 0; i < blanks; i++) rows.push(ingredientRowHtml());
-  return rows.join('');
+  return `<div class="ing-section">
+    <div class="ing-section-head">
+      <span class="ing-section-label">Section</span>
+      <input class="input section-name" value="${esc(sec.title)}" placeholder="Name, e.g. Marinade, Sauce, Rice" enterkeyhint="next">
+      <button type="button" class="icon-btn" data-action="remove-section" aria-label="Remove section" title="Remove this section">${I.x}</button>
+    </div>
+    <div class="ing-section-rows">${rows.join('')}</div>
+    <button type="button" class="btn small add-to-section" data-action="add-ing-row">${I.plus} Ingredient</button>
+  </div>`;
 }
 
-// Reads the ingredient rows back into lines of text ("1½ cups flour").
+function sectionsHtml(parsed) {
+  const sections = toSections(parsed);
+  // Leave an empty row at the end (a few for a new recipe) ready to fill in.
+  return sections.map((sec, i) => sectionHtml(sec, i === sections.length - 1 ? (parsed.length ? 1 : 3) : 0)).join('');
+}
+
+// A single unnamed section looks like a plain list; names appear once there are several.
+function refreshSections() {
+  const secs = [...document.querySelectorAll('#ing-rows .ing-section')];
+  for (const sec of secs) {
+    const plain = secs.length === 1 && !sec.querySelector('.section-name').value.trim();
+    sec.classList.toggle('plain', plain);
+  }
+}
+
+// Reads the sections back into lines of text ("Sauce:", "1½ cups flour", ...).
 function editorIngredients() {
-  return [...document.querySelectorAll('#ing-rows .ing-row')].map(row => {
-    const input = row.querySelector('input.input');
-    const text = input.value.trim();
-    if (row.dataset.kind === 'header') return text ? `${text.replace(/:$/, '')}:` : '';
-    if (!text) return '';
-    const [first = { qty: null, unit: null }, ...extras] = readAmounts(row);
-    const max = row.dataset.max ? Number(row.dataset.max) : null;
-    const qtyMax = first.qty !== null && !extras.length && max > first.qty ? max : null;
-    return buildLine({ qty: first.qty, qtyMax, unit: first.unit, extras, name: text });
-  }).filter(Boolean).join('\n');
+  const lines = [];
+  for (const sec of document.querySelectorAll('#ing-rows .ing-section')) {
+    const items = [];
+    for (const row of sec.querySelectorAll('.ing-row')) {
+      const text = row.querySelector('input.ing-name').value.trim();
+      if (!text) continue;
+      const [first = { qty: null, unit: null }, ...extras] = readAmounts(row);
+      const max = row.dataset.max ? Number(row.dataset.max) : null;
+      const qtyMax = first.qty !== null && !extras.length && max > first.qty ? max : null;
+      items.push(buildLine({ qty: first.qty, qtyMax, unit: first.unit, extras, name: text }));
+    }
+    const title = sec.querySelector('.section-name').value.trim().replace(/:+$/, '');
+    if (title && (items.length || lines.length)) lines.push(`${title}:`);
+    lines.push(...items);
+  }
+  return lines.join('\n');
 }
 
-function appendIngredientRow(html, after = null) {
-  const wrap = document.getElementById('ing-rows');
+function appendIngredientRow(section, after = null) {
   const tmp = document.createElement('div');
-  tmp.innerHTML = html;
+  tmp.innerHTML = ingredientRowHtml();
   const row = tmp.firstElementChild;
-  if (after) after.after(row); else wrap.append(row);
-  row.querySelector('input.input').focus();
+  if (after) after.after(row); else section.querySelector('.ing-section-rows').append(row);
+  row.querySelector('input.ing-name').focus();
   return row;
+}
+
+function addSection(sec = { title: '', items: [] }, blanks = 2) {
+  const wrap = document.getElementById('ing-rows');
+  wrap.insertAdjacentHTML('beforeend', sectionHtml(sec, blanks));
+  refreshSections();
+  return wrap.lastElementChild;
 }
 
 function starButtons(n) {
@@ -962,9 +1010,19 @@ function openPasteIngredients() {
     onConfirm: form => {
       const wrap = document.getElementById('ing-rows');
       if (!wrap) return;
-      // Drop empty rows, add the pasted ones, then keep one blank row at the end.
-      for (const row of wrap.querySelectorAll('.ing-row')) if (!row.querySelector('input.input').value.trim()) row.remove();
-      wrap.insertAdjacentHTML('beforeend', ingredientRowsHtml(parseIngredients(new FormData(form).get('text'))));
+      // Drop empty rows, then add the pasted ingredients. Lines ending in ":" start new sections.
+      for (const row of wrap.querySelectorAll('.ing-row')) if (!row.querySelector('input.ing-name').value.trim()) row.remove();
+      const pasted = toSections(parseIngredients(new FormData(form).get('text')));
+      const last = wrap.querySelector('.ing-section:last-child');
+      if (!pasted[0].title && last) {
+        last.querySelector('.ing-section-rows').insertAdjacentHTML('beforeend', pasted.shift().items.map(ingredientRowHtml).join(''));
+      }
+      for (const sec of pasted) addSection(sec, 0);
+      appendIngredientRow(wrap.querySelector('.ing-section:last-child')).blur();
+      for (const sec of wrap.querySelectorAll('.ing-section')) {
+        if (!sec.querySelector('.ing-row')) sec.querySelector('.ing-section-rows').innerHTML = ingredientRowHtml();
+      }
+      refreshSections();
     },
   });
 }
@@ -1057,7 +1115,7 @@ function openImport() {
         if (![...sel.options].some(o => o.value === parsed[k])) sel.add(new Option(parsed[k], parsed[k]), 1);
         sel.value = parsed[k];
       }
-      if (parsed.ingredients) document.getElementById('ing-rows').innerHTML = ingredientRowsHtml(parseIngredients(parsed.ingredients));
+      if (parsed.ingredients) { document.getElementById('ing-rows').innerHTML = sectionsHtml(parseIngredients(parsed.ingredients)); refreshSections(); }
     },
   });
 }
@@ -1220,15 +1278,29 @@ function handleAction(el, e) {
       break;
     }
     case 'add-ing-row':
-      appendIngredientRow(ingredientRowHtml());
+      appendIngredientRow(el.closest('.ing-section'));
       break;
-    case 'add-ing-header':
-      appendIngredientRow(ingredientRowHtml({ header: '' }));
+    case 'add-section': {
+      const sec = addSection();
+      sec.querySelector('.section-name').focus();
+      // Naming the first part now makes sense too (e.g. "Chicken"), so its name box shows.
       break;
-    case 'remove-ing-row':
+    }
+    case 'remove-section': {
+      const sec = el.closest('.ing-section');
+      const filled = [...sec.querySelectorAll('input.ing-name')].filter(i => i.value.trim()).length;
+      if (filled && !confirm(`Remove this section and its ${filled} ingredient${filled === 1 ? '' : 's'}?`)) break;
+      sec.remove();
+      if (!document.querySelector('#ing-rows .ing-section')) addSection({ title: '', items: [] }, 3);
+      refreshSections();
+      break;
+    }
+    case 'remove-ing-row': {
+      const sec = el.closest('.ing-section');
       el.closest('.ing-row').remove();
-      if (!document.querySelector('#ing-rows .ing-row')) appendIngredientRow(ingredientRowHtml());
+      if (!sec.querySelector('.ing-row')) appendIngredientRow(sec);
       break;
+    }
     case 'paste-ingredients':
       openPasteIngredients();
       break;
@@ -1412,14 +1484,22 @@ document.addEventListener('submit', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.closest && e.target.closest('#ing-rows')) {
     e.preventDefault();
+    const sec = e.target.closest('.ing-section');
+    if (e.target.classList.contains('section-name')) {
+      // From a section name, jump to its first ingredient.
+      const first = sec.querySelector('input.ing-name');
+      if (first) first.focus(); else appendIngredientRow(sec);
+      return;
+    }
     const row = e.target.closest('.ing-row');
-    const next = row.nextElementSibling;
-    if (next && !next.querySelector('input.input').value.trim()) next.querySelector('input.input').focus();
-    else appendIngredientRow(ingredientRowHtml(), row);
+    const next = row && row.nextElementSibling;
+    if (next && !next.querySelector('input.ing-name').value.trim()) next.querySelector('input.ing-name').focus();
+    else appendIngredientRow(sec, row);
   }
 });
 
 document.addEventListener('input', e => {
+  if (e.target.classList && e.target.classList.contains('section-name')) refreshSections();
   if (e.target.id === 'recipe-search') {
     ui.search = e.target.value;
     document.getElementById('recipe-results').innerHTML = recipeCardsHtml();

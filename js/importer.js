@@ -109,6 +109,9 @@ function instructionSteps(value) {
     if (Array.isArray(v)) { v.forEach(walk); return; }
     if (typeof v === 'object') {
       if (hasType(v, 'HowToSection') || v.itemListElement) {
+        // Keep the site's step sections ("Cake", "Glaze") as headings.
+        const title = clean(v.name || '');
+        if (title) steps.push(`${title.replace(/:$/, '')}:`);
         walk(v.itemListElement);
         return;
       }
