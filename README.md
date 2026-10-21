@@ -19,6 +19,19 @@ It ships with no recipes and never suggests any. Everything you see is something
 
 A Y2K "console chrome" theme: brushed-periwinkle beveled panels, a carbon navigation layer with a halftone dot texture and gold menu words, circuit-board banners tinted per section, outlined box-art headings, and warm color reserved for actions (amber for tools, orange for forward/save). Arial throughout (Arimo / Archivo Black from Google Fonts where Arial isn't installed) with a pixel font for small labels.
 
+## Health tab
+
+Six tools under **Health** (`js/health.js` for the math, `js/health-ui.js` for the screens):
+
+- **TDEE & Macro Calculator**: Mifflin–St Jeor BMR × activity factor, adjusted for your goal; protein by body weight, fat 25% of calories, carbs the rest. Targets never go below 1,200 (women) / 1,500 (men) calories.
+- **Ingredient Swap Calculator**: 30+ budget swaps with amounts, tips and a USDA nutrition comparison; can check one of your recipes for swaps.
+- **Calorie Calculator**: add foods with amounts (g, oz, cups, “1 large”, …) or load a recipe (the **Nutrition** button on a recipe opens it here); totals per serving.
+- **Nutrition Lookup**: search 7,600+ foods; full nutrition label with % Daily Value for any amount.
+- **Water Intake Calculator**: ½ oz per lb of body weight + 12 oz per 30 min of exercise + extra for heat.
+- **Body Fat Calculator**: U.S. Navy formula, with ACE category ranges.
+
+Nutrition data comes from the USDA National Nutrient Database for Standard Reference, Release 28 (public domain), converted by `tools/build_nutrition.py` into `data/nutrition.json` (loaded only when a nutrition tool is opened). Inputs are remembered on the device. These are general estimates, not medical advice.
+
 ## How the sync works
 
 - Each ingredient on a recipe shows whether it is **in your pantry**, **not enough** (the pantry has less than the recipe needs), **on your grocery list**, or **needed**.

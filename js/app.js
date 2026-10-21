@@ -2,6 +2,7 @@ import * as db from './db.js';
 import * as cloud from './cloud.js';
 import { extractUrls, draftFromLink, fetchViaRelays } from './importer.js';
 import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories } from './categories.js';
+import { renderHealth } from './health-ui.js';
 import {
   parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -14,7 +15,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '10';
+const APP_VERSION = '11';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -34,6 +35,7 @@ const I = {
   dish: svg('<path d="M3 13h18a9 9 0 0 1-18 0Z"/><path d="M12 4v3M8 5.5 9 8M16 5.5 15 8"/>'),
   home: svg('<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/>'),
   clipboard: svg('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>'),
+  heart: svg('<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21.2l8.8-8.8a5.5 5.5 0 0 0 0-7.8Z"/>'),
   download: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'),
   more: svg('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>'),
 };
@@ -216,6 +218,7 @@ function renderNav(r) {
     ['recipes', 'Recipes', I.book, state.recipes.length],
     ['grocery', 'Groceries', I.cart, uncheckedCount()],
     ['pantry', 'Pantry', I.pantry, state.pantry.length],
+    ['health', 'Health', I.heart, null],
     ['settings', 'Settings', I.gear, null],
   ];
   document.getElementById('side-links').innerHTML = links.map(([k, label, icon, n]) => `
@@ -246,11 +249,14 @@ function render() {
     edit: () => viewEditor(r.id),
     grocery: viewGrocery,
     pantry: viewPantry,
+    health: () => renderHealth({ view: $view, esc, toast, openSheet, closeSheet, go, getState: () => state }),
     settings: viewSettings,
   };
   // The editor keeps its own form state; don't wipe it on background re-renders.
   if ((r.name === 'edit' || r.name === 'new') && $view.dataset.view === `${r.name}/${r.id}`) return;
-  $view.dataset.view = `${r.name}/${r.id}`;
+  // Health tools keep what you're typing: don't redraw them for unrelated changes (e.g. sync).
+  if (r.name === 'health' && $view.dataset.view === `health:${location.hash}` && $view.dataset.section === 'health') return;
+  $view.dataset.view = r.name === 'health' ? `health:${location.hash}` : `${r.name}/${r.id}`;
   $view.dataset.section = views[r.name] ? r.name : 'recipes'; // picks the hero tint
   (views[r.name] || viewRecipes)();
   if (r.name === 'new' || r.name === 'edit') refreshSections();
@@ -435,6 +441,7 @@ function viewRecipe(id) {
         ${(r.categories || []).length ? `<div class="cats">${r.categories.map(c => `<span>${esc(c)}</span>`).join('')}</div>` : ''}
         <div class="detail-actions">
           <button class="btn primary" data-action="open-add-to-list">${I.cart} Add to Grocery List</button>
+          <a class="btn small" href="#/health/calories/${encodeURIComponent(id)}">${I.heart} Nutrition</a>
         </div>
       </div>
     </div>
