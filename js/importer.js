@@ -257,9 +257,17 @@ async function withTimeout(promise, ms) {
   }
 }
 
+// Your own relay (e.g. the Cloudflare Worker in tools/cloudflare-worker.js), tried before the
+// public ones. Set from Settings; '' turns it off.
+let customRelay = '';
+export function setCustomRelay(base) {
+  customRelay = String(base || '').trim().replace(/[?&]+$/, '');
+}
+
 // Fetches through the relays (direct first, which works for sites that allow it).
 export async function fetchViaRelays(url, as = 'text', fetchFn = globalThis.fetch) {
-  const attempts = [u => u, ...RELAYS];
+  const own = customRelay ? [u => `${customRelay}${customRelay.includes('?') ? '&' : '?'}url=${encodeURIComponent(u)}`] : [];
+  const attempts = [...own, u => u, ...RELAYS];
   let lastErr;
   for (const wrap of attempts) {
     try {
@@ -289,4 +297,132 @@ export async function draftFromLink(url, fetchFn = globalThis.fetch) {
   const d = recipeFromHtml(html, url);
   if (!d || (!d.name && !d.ingredients)) throw new Error('No recipe found on that page');
   return d;
+}
+
+// ---------- Pasting many recipes at once ----------
+
+const META_LINE = /^(servings?|serves|yield|makes|prep(?: time)?|cook(?: time)?|total(?: time)?)\b/i;
+const INGREDIENT_HEADER = /^(ingredients?|what you(?:'|’)ll need|you(?:'|’)ll need)$/;
+const SEPARATOR = /^\s*(-{3,}|={3,}|\*{3,}|_{3,}|~{3,})\s*$/;
+
+function headerWord(line) {
+  return line.toLowerCase().replace(/[:#*]/g, '').trim();
+}
+
+// Splits text holding several recipes (e.g. copied from a notes app) into one chunk per recipe.
+// A line of "---" always separates recipes; otherwise each "Ingredients" heading starts a new
+// recipe whose name is the line above it.
+export function splitRecipeTexts(text) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n');
+  if (lines.some(l => SEPARATOR.test(l))) {
+    const chunks = [];
+    let cur = [];
+    for (const l of lines) {
+      if (SEPARATOR.test(l)) { chunks.push(cur.join('\n')); cur = []; } else cur.push(l);
+    }
+    chunks.push(cur.join('\n'));
+    return chunks.map(c => c.trim()).filter(Boolean);
+  }
+  const headers = lines.map((l, i) => (INGREDIENT_HEADER.test(headerWord(l)) ? i : -1)).filter(i => i >= 0);
+  if (headers.length <= 1) return String(text || '').trim() ? [String(text).trim()] : [];
+  // Start of each recipe: walk up from its Ingredients heading past blank and meta lines to the title.
+  const starts = headers.map((h, k) => {
+    let i = h - 1;
+    const floor = k ? headers[k - 1] + 1 : 0;
+    while (i > floor && (!lines[i].trim() || META_LINE.test(lines[i].trim()))) i--;
+    return k === 0 ? 0 : Math.max(floor, i);
+  });
+  return starts.map((st, k) => lines.slice(st, k + 1 < starts.length ? starts[k + 1] : lines.length).join('\n').trim()).filter(Boolean);
+}
+
+export function draftsFromText(text, source = '') {
+  return splitRecipeTexts(text).map(chunk => {
+    const p = parseRecipeText(chunk);
+    return { ...emptyDraft(source), ...p, directions: p.directions.replace(/\n\n/g, '\n') };
+  }).filter(d => d.name && (d.ingredients || d.directions || d.notes));
+}
+
+// ---------- Files: Paprika exports, saved web pages, text files ----------
+
+async function inflate(bytes, format) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+export const gunzip = bytes => inflate(bytes, 'gzip');
+
+// Minimal ZIP reader (stored + deflate entries), enough for Paprika's .paprikarecipes files.
+export async function readZip(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Not a zip file');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const entries = [];
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('Bad zip directory');
+    const method = dv.getUint16(p + 10, true);
+    const compSize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    const lNameLen = dv.getUint16(local + 26, true);
+    const lExtraLen = dv.getUint16(local + 28, true);
+    const start = local + 30 + lNameLen + lExtraLen;
+    const raw = bytes.subarray(start, start + compSize);
+    if (!name.endsWith('/')) {
+      if (method === 0) entries.push({ name, data: raw });
+      else if (method === 8) entries.push({ name, data: await inflate(raw, 'deflate-raw') });
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+// One Paprika recipe (JSON) -> draft.
+export function draftFromPaprika(r) {
+  const d = emptyDraft(r.source_url || r.source || '');
+  d.name = clean(r.name || '');
+  d.ingredients = String(r.ingredients || '').replace(/\r/g, '').trim();
+  d.directions = String(r.directions || '').replace(/\r/g, '').split(/\n+/).map(s => s.trim()).filter(Boolean).join('\n');
+  d.notes = [r.description, r.notes].filter(Boolean).map(s => String(s).trim()).join('\n\n');
+  d.servings = clean(r.servings || '');
+  d.prepTime = clean(r.prep_time || '');
+  d.cookTime = clean(r.cook_time || '') || clean(r.total_time || '');
+  d.categories = asArray(r.categories).map(c => clean(c)).filter(Boolean);
+  d.rating = Math.max(0, Math.min(5, Number(r.rating) || 0));
+  if (r.photo_data) d.photoDataUrl = `data:image/jpeg;base64,${r.photo_data}`;
+  else if (r.image_url) d.imageUrl = r.image_url;
+  return d;
+}
+
+const looksGzip = b => b.length > 2 && b[0] === 0x1f && b[1] === 0x8b;
+
+// Reads any supported file into recipe drafts.
+export async function draftsFromFile(name, bytes) {
+  const lower = String(name).toLowerCase();
+  const text = () => new TextDecoder().decode(bytes);
+  if (lower.endsWith('.paprikarecipes')) {
+    const out = [];
+    for (const entry of await readZip(bytes)) {
+      const raw = looksGzip(entry.data) ? await gunzip(entry.data) : entry.data;
+      out.push(draftFromPaprika(JSON.parse(new TextDecoder().decode(raw))));
+    }
+    return out;
+  }
+  if (lower.endsWith('.paprikarecipe')) {
+    const raw = looksGzip(bytes) ? await gunzip(bytes) : bytes;
+    return [draftFromPaprika(JSON.parse(new TextDecoder().decode(raw)))];
+  }
+  if (/\.(html?|webarchive|mhtml?)$/.test(lower)) {
+    const html = text();
+    const canonical = (html.match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)/i) || html.match(/<meta[^>]+property=["']og:url["'][^>]*content=["']([^"']+)/i) || [])[1] || '';
+    const d = recipeFromHtml(html, decodeEntities(canonical));
+    return d && (d.ingredients || d.directions) ? [d] : [];
+  }
+  return draftsFromText(text());
 }

@@ -1,8 +1,9 @@
 import * as db from './db.js';
 import * as cloud from './cloud.js';
-import { extractUrls, draftFromLink, fetchViaRelays } from './importer.js';
+import { extractUrls, draftFromLink, fetchViaRelays, draftsFromText, draftsFromFile, setCustomRelay } from './importer.js';
 import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories } from './categories.js';
 import { renderHealth } from './health-ui.js';
+import { renderCook } from './cook-ui.js';
 import {
   parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -15,7 +16,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '11';
+const APP_VERSION = '12';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -213,7 +214,7 @@ window.addEventListener('hashchange', () => {
 
 // ---------- Navigation chrome ----------
 function renderNav(r) {
-  const section = ['recipe', 'edit', 'new'].includes(r.name) ? 'recipes' : r.name;
+  const section = ['recipe', 'edit', 'new'].includes(r.name) ? 'recipes' : r.name === 'cook' ? 'pantry' : r.name;
   const links = [
     ['recipes', 'Recipes', I.book, state.recipes.length],
     ['grocery', 'Groceries', I.cart, uncheckedCount()],
@@ -250,6 +251,7 @@ function render() {
     grocery: viewGrocery,
     pantry: viewPantry,
     health: () => renderHealth({ view: $view, esc, toast, openSheet, closeSheet, go, getState: () => state }),
+    cook: () => renderCook({ view: $view, esc, toast, go, commit, getState: () => state }),
     settings: viewSettings,
   };
   // The editor keeps its own form state; don't wipe it on background re-renders.
@@ -343,7 +345,7 @@ function viewRecipes() {
       </div>` : ''}
       ${untagged ? `<div class="banner">${I.book}<span class="grow">${untagged} recipe${untagged === 1 ? ' has' : 's have'} no categories yet.</span>
         <button class="btn small" data-action="auto-sort">Sort Automatically</button></div>` : ''}
-      ${state.recipes.length ? `<div class="list-toolbar"><span></span>
+      ${state.recipes.length ? `<div class="list-toolbar"><a class="btn small" href="#/cook">What Can I Make?</a>
         <label>Sort <select id="recipe-sort">
           <option value="name" ${ui.sort === 'name' ? 'selected' : ''}>Name</option>
           <option value="recent" ${ui.sort === 'recent' ? 'selected' : ''}>Recently Added</option>
@@ -776,6 +778,7 @@ function viewPantry() {
   $view.innerHTML = `
     <header class="topbar">
       <div class="topbar-row"><h1>Pantry<span class="sub">${state.pantry.length} item${state.pantry.length === 1 ? '' : 's'} on hand</span></h1></div>
+      <a class="btn primary block cook-entry" href="#/cook">What Can I Make?</a>
       <form class="add-form" data-form="add-pantry">
         <input id="pantry-input" class="input" name="entry" placeholder="Add something you have" autocomplete="off" enterkeyhint="done">
         <div class="add-row">${amountPicker()}<button class="btn primary" type="submit">Add</button></div>
@@ -810,6 +813,11 @@ function viewSettings() {
           <button class="btn" data-action="export">Export Backup</button>
           <label class="btn" style="cursor:pointer">Import Backup<input type="file" accept="application/json,.json" id="import-input" hidden></label>
         </div>
+      </div>
+      <div class="settings-card">
+        <h2>Link Import Relay</h2>
+        <p>Optional. If importing from links doesn’t work, set up your own free relay on Cloudflare (instructions in the project’s <b>tools/cloudflare-worker.js</b>) and paste its address here. It’s tried before the public relays.</p>
+        <div class="add-bar" style="margin-top:0"><input id="relay-url" class="input" type="url" placeholder="https://recipe-relay.yourname.workers.dev" value="${esc(localPref('relay', ''))}"><button class="btn small" data-action="save-relay">Save</button></div>
       </div>
       <div class="settings-card">
         <h2>How the grocery list stays in sync</h2>
@@ -1034,6 +1042,114 @@ function openPasteIngredients() {
   });
 }
 
+// ---------- Import ----------
+function openImportChooser() {
+  openSheet('Import Recipes', `
+    <div class="import-choices">
+      <button type="button" class="import-choice" data-action="import-links"><b>${I.download} From Links</b><span>Recipe websites or TikTok videos — paste one or many links.</span></button>
+      <button type="button" class="import-choice" data-action="import-text"><b>${I.clipboard} Paste Text</b><span>One recipe or many at once, e.g. copied from your Notes app.</span></button>
+      <button type="button" class="import-choice" data-action="import-files"><b>${I.book} From Files</b><span>Paprika exports, web pages saved from your browser, or text files. Pick several at once.</span></button>
+    </div>`);
+}
+
+function openTextImport() {
+  openSheet('Paste Recipes', `
+    <p style="margin:0 0 10px;font-size:13px">Paste one recipe or many. Each recipe needs a name line followed by an <b>Ingredients</b> section (and ideally <b>Directions</b>). To be sure recipes are split right, put a line with <b>---</b> between them.</p>
+    <textarea class="input" name="text" rows="14" placeholder="Garlic Pasta&#10;Ingredients&#10;1 lb spaghetti&#10;4 tbsp butter&#10;Directions&#10;Boil pasta…&#10;---&#10;Chicken Tacos&#10;Ingredients&#10;…" required></textarea>`, {
+    confirmLabel: 'Import',
+    footHtml: `<button type="submit" class="btn primary block">${I.download} Import</button>`,
+    onConfirm: form => {
+      const drafts = draftsFromText(new FormData(form).get('text'));
+      if (!drafts.length) { toast('No recipes found — each needs a name and an Ingredients section'); return false; }
+      runDraftImport(drafts.map(d => ({ label: d.name, draft: d })));
+      return false;
+    },
+  });
+}
+
+function openFileImport() {
+  openSheet('Import Files', `
+    <p style="margin:0 0 10px;font-size:13px">Choose one or more files:</p>
+    <ul style="margin:0 0 12px;padding-left:18px;font-size:13px">
+      <li><b>Paprika</b> export (.paprikarecipes) — everything comes over, including photos and categories.</li>
+      <li><b>Web pages</b> saved from your browser (.html) — works even when a link won’t import.</li>
+      <li><b>Text files</b> (.txt) — one or many recipes each.</li>
+    </ul>
+    <label class="btn primary block" style="cursor:pointer">${I.download} Choose Files<input type="file" id="recipe-files" multiple accept=".paprikarecipes,.paprikarecipe,.html,.htm,.txt,.md,text/plain,text/html" hidden></label>`);
+}
+
+async function importFiles(files) {
+  const items = [];
+  for (const file of files) {
+    try {
+      const drafts = await draftsFromFile(file.name, new Uint8Array(await file.arrayBuffer()));
+      if (!drafts.length) items.push({ label: file.name, error: 'No recipe found in this file' });
+      for (const d of drafts) items.push({ label: d.name || file.name, draft: d });
+    } catch (err) {
+      console.warn('File import failed', file.name, err);
+      items.push({ label: file.name, error: 'Couldn’t read this file' });
+    }
+  }
+  if (!items.length) { toast('No files chosen'); return; }
+  runDraftImport(items);
+}
+
+// Saves an imported draft as a recipe (with its photo if there is one).
+async function saveDraft(d, fallbackSource = '') {
+  const recipe = saveRecipe(state, {
+    id: uid(), name: d.name || 'Imported recipe', source: d.source || fallbackSource, ingredients: d.ingredients || '',
+    directions: d.directions || '', notes: d.notes || '', servings: d.servings || '', prepTime: d.prepTime || '', cookTime: d.cookTime || '',
+    categories: d.categories && d.categories.length ? d.categories : suggestCategories(d), rating: d.rating || 0,
+  });
+  const src = d.photoDataUrl || d.imageUrl;
+  if (src) {
+    try {
+      const blob = d.photoDataUrl ? await (await fetch(d.photoDataUrl)).blob() : await fetchViaRelays(d.imageUrl, 'blob');
+      const dataUrl = await resizeImage(blob);
+      photos.set(recipe.id, dataUrl);
+      await db.set(`photo:${recipe.id}`, dataUrl);
+      recipe.photo = true;
+    } catch { /* recipe still imports without a photo */ }
+  }
+  return recipe;
+}
+
+function importedRowHtml(recipe, d) {
+  const lines = s => (s ? s.split('\n').filter(l => l.trim() && !/:$/.test(l.trim())).length : 0);
+  return `<span class="txt"><b>${esc(recipe.name)}</b><br><small>${recipe.categories.length ? `${esc(recipe.categories.join(', '))} · ` : ''}${recipe.photo ? 'Photo, ' : ''}${d.ingredients ? `${lines(d.ingredients)} ingredients` : 'no ingredients found'}${d.directions ? `, ${lines(d.directions)} steps` : ''}${!d.ingredients ? ' — add the ingredients' : ''}</small></span>
+    <a class="btn small" href="#/${d.ingredients ? 'recipe' : 'edit'}/${encodeURIComponent(recipe.id)}">${d.ingredients ? 'View' : 'Edit'}</a>`;
+}
+
+function isDuplicate(d) {
+  return state.recipes.find(r => (d.source && r.source === d.source) || (r.name === d.name && (r.ingredients || '') === (d.ingredients || '')));
+}
+
+// Shows progress while saving a batch of drafts: [{ label, draft } | { label, error }].
+async function runDraftImport(items) {
+  const body = $sheet.querySelector('.sheet-body');
+  const foot = $sheet.querySelector('.sheet-foot');
+  const head = $sheet.querySelector('.sheet-head button[type=submit]');
+  if (head) head.hidden = true;
+  if (foot) foot.innerHTML = '<button type="button" class="btn block" data-action="close-sheet" disabled>Importing…</button>';
+  else body.insertAdjacentHTML('afterend', '<div class="sheet-foot"><button type="button" class="btn block" data-action="close-sheet" disabled>Importing…</button></div>');
+  body.innerHTML = `<p class="hint" style="margin:0 0 8px">${items.length} recipe${items.length === 1 ? '' : 's'} found.</p><ul class="pick-list import-list">${items.map((it, i) => `<li id="imp-${i}"><span class="txt"><b>${esc(it.label)}</b><br><small>${it.error ? '' : 'Saving…'}</small></span></li>`).join('')}</ul>`;
+  let saved = 0;
+  for (let i = 0; i < items.length; i++) {
+    const row = document.getElementById(`imp-${i}`);
+    const it = items[i];
+    if (it.error) { row.innerHTML = `<span class="txt"><b>${esc(it.label)}</b><br><small>${esc(it.error)}</small></span>`; continue; }
+    const dup = isDuplicate(it.draft);
+    if (dup) { row.innerHTML = `<span class="txt"><b>Already in your recipes</b><br><small>${esc(dup.name)}</small></span><a class="btn small" href="#/recipe/${encodeURIComponent(dup.id)}">View</a>`; continue; }
+    const recipe = await saveDraft(it.draft);
+    saved++;
+    row.innerHTML = importedRowHtml(recipe, it.draft);
+  }
+  if (saved) commit();
+  const f = $sheet.querySelector('.sheet-foot');
+  if (f) f.innerHTML = `<button type="button" class="btn primary block" data-action="close-sheet">Done${saved ? ` — ${saved} imported` : ''}</button>`;
+  if (saved && route().name !== 'recipes') go('#/recipes');
+}
+
 // ---------- Import from links ----------
 function openLinkImport(prefill = '', autoStart = false) {
   openSheet('Import Recipes', `
@@ -1074,29 +1190,13 @@ async function runLinkImport(urls) {
     }
     try {
       const d = await draftFromLink(url);
-      const recipe = saveRecipe(state, {
-        id: uid(), name: d.name || 'Imported recipe', source: d.source || url, ingredients: d.ingredients,
-        directions: d.directions, notes: d.notes, servings: d.servings, prepTime: d.prepTime, cookTime: d.cookTime,
-        categories: suggestCategories(d), rating: 0,
-      });
-      if (d.imageUrl) {
-        try {
-          const blob = await fetchViaRelays(d.imageUrl, 'blob');
-          const dataUrl = await resizeImage(blob);
-          photos.set(recipe.id, dataUrl);
-          await db.set(`photo:${recipe.id}`, dataUrl);
-          recipe.photo = true;
-        } catch { /* recipe still imports without a photo */ }
-      }
+      const recipe = await saveDraft(d, url);
       commit();
       saved++;
-      const missing = !d.ingredients ? ' — add the ingredients' : '';
-      setRow(`<span class="txt"><b>${esc(recipe.name)}</b><br><small>${recipe.categories.length ? `${esc(recipe.categories.join(', '))} · ` : ''}${recipe.photo ? 'Photo, ' : ''}${d.ingredients ? `${d.ingredients.split('\n').length} ingredients` : 'no ingredients found'}${d.directions ? `, ${d.directions.split('\n').length} steps` : ''}${missing}</small></span>
-        <a class="btn small" href="#/${d.ingredients ? 'recipe' : 'edit'}/${encodeURIComponent(recipe.id)}">${d.ingredients ? 'View' : 'Edit'}</a>`);
+      setRow(importedRowHtml(recipe, d));
     } catch (err) {
       console.warn('Import failed', url, err);
-      setRow(`<span class="txt"><b>Couldn’t read this link</b><br><small>${esc(url)}</small><br><small>Open it, copy the recipe text, and use “Paste recipe text” on a new recipe.</small></span>
-        <a class="btn small" href="#/new">New</a>`);
+      setRow(`<span class="txt"><b>Couldn’t read this link</b><br><small>${esc(url)}</small><br><small>Try saving the page from your browser and importing the file, or copy the recipe text and use Paste Text.</small></span>`);
     }
   }
   if (foot) foot.innerHTML = `<button type="button" class="btn primary block" data-action="close-sheet">Done${saved ? ` — ${saved} imported` : ''}</button>`;
@@ -1274,8 +1374,25 @@ function handleAction(el, e) {
       openImport();
       break;
     case 'open-link-import':
+      openImportChooser();
+      break;
+    case 'import-links':
       openLinkImport();
       break;
+    case 'import-text':
+      openTextImport();
+      break;
+    case 'import-files':
+      openFileImport();
+      break;
+    case 'save-relay': {
+      const v = document.getElementById('relay-url').value.trim();
+      if (v && !/^https:\/\//i.test(v)) { toast('The relay address should start with https://'); break; }
+      setPref('relay', v);
+      setCustomRelay(v);
+      toast(v ? 'Relay saved — link imports will use it first' : 'Relay removed');
+      break;
+    }
     case 'paste-links': {
       const box = $sheet.querySelector('textarea[name=links]');
       if (!navigator.clipboard || !navigator.clipboard.readText) { box.focus(); toast('Long-press the box and choose Paste'); break; }
@@ -1542,6 +1659,8 @@ document.addEventListener('change', async e => {
     } catch {
       toast('Could not read that image');
     }
+  } else if (e.target.id === 'recipe-files' && e.target.files.length) {
+    await importFiles([...e.target.files]);
   } else if (e.target.id === 'import-input' && e.target.files[0]) {
     await importBackup(e.target.files[0]);
     e.target.value = '';
@@ -1562,6 +1681,7 @@ async function start() {
   } catch (err) {
     console.error('Could not load saved data', err);
   }
+  setCustomRelay(localPref('relay', ''));
   render();
   const shared = new URLSearchParams(location.search);
   const sharedUrls = extractUrls([shared.get('url'), shared.get('text'), shared.get('title')].filter(Boolean).join(' '));

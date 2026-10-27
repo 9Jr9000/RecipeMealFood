@@ -134,3 +134,109 @@ test('TikTok links use the caption from oEmbed', async () => {
   assert.equal(d.ingredients.split('\n').length, 5);
   assert.equal(d.imageUrl, 'https://t/x.jpg');
 });
+
+// ---------- Mass import ----------
+import zlib from 'node:zlib';
+import { splitRecipeTexts, draftsFromText, draftsFromFile, readZip, setCustomRelay, fetchViaRelays } from '../js/importer.js';
+
+const NOTES = `Garlic Pasta
+Serves 4
+Ingredients
+1 lb spaghetti
+4 tbsp butter
+Directions
+1. Boil pasta.
+2. Toss with butter.
+
+Chicken Tacos
+Ingredients:
+1 lb chicken thighs
+8 tortillas
+Instructions
+Grill chicken.
+Fill tortillas.
+
+Banana Bread
+Prep time: 15 min
+Ingredients
+3 bananas
+2 cups flour
+Steps
+Mash bananas.
+Bake 1 hour.`;
+
+test('splits a paste holding several recipes', () => {
+  const chunks = splitRecipeTexts(NOTES);
+  assert.equal(chunks.length, 3);
+  const drafts = draftsFromText(NOTES);
+  assert.deepEqual(drafts.map(d => d.name), ['Garlic Pasta', 'Chicken Tacos', 'Banana Bread']);
+  assert.equal(drafts[0].servings, '4');
+  assert.equal(drafts[1].ingredients, '1 lb chicken thighs\n8 tortillas');
+  assert.equal(drafts[2].prepTime, '15 min');
+  assert.equal(drafts[2].directions, 'Mash bananas.\nBake 1 hour.');
+});
+
+test('a line of --- separates recipes', () => {
+  const d = draftsFromText('Soup\nIngredients\n1 onion\n---\nSalad\nIngredients\n1 lettuce\n---\n');
+  assert.deepEqual(d.map(x => x.name), ['Soup', 'Salad']);
+  assert.equal(draftsFromText('Just one\nIngredients\n1 egg').length, 1);
+});
+
+// Builds a .paprikarecipes file the way Paprika does: a zip of gzipped JSON recipes.
+function makeZip(files) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, content] of files) {
+    const nameBuf = Buffer.from(name);
+    const data = zlib.deflateRawSync(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(data.length, 18); local.writeUInt32LE(content.length, 22); local.writeUInt16LE(nameBuf.length, 26);
+    parts.push(local, nameBuf, data);
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6); c.writeUInt16LE(8, 10);
+    c.writeUInt32LE(data.length, 20); c.writeUInt32LE(content.length, 24); c.writeUInt16LE(nameBuf.length, 28); c.writeUInt32LE(offset, 42);
+    central.push(c, nameBuf);
+    offset += 30 + nameBuf.length + data.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return new Uint8Array(Buffer.concat([...parts, cd, end]));
+}
+
+test('reads a Paprika export (.paprikarecipes)', async () => {
+  const recipe = (name, extra = {}) => zlib.gzipSync(Buffer.from(JSON.stringify({
+    name, ingredients: '2 cups flour\r\n1 tsp salt', directions: 'Mix.\r\n\r\nBake.', servings: '8', prep_time: '10 min',
+    cook_time: '30 min', source_url: 'https://example.com/x', categories: ['Baking'], rating: 4, notes: 'Yum', ...extra,
+  })));
+  const zip = makeZip([['Bread.paprikarecipe', recipe('Bread', { photo_data: 'AAAA' })], ['Cake.paprikarecipe', recipe('Cake')]]);
+  assert.equal((await readZip(zip)).length, 2);
+  const drafts = await draftsFromFile('My Recipes.paprikarecipes', zip);
+  assert.deepEqual(drafts.map(d => d.name), ['Bread', 'Cake']);
+  assert.equal(drafts[0].ingredients, '2 cups flour\n1 tsp salt');
+  assert.equal(drafts[0].directions, 'Mix.\nBake.');
+  assert.deepEqual(drafts[0].categories, ['Baking']);
+  assert.equal(drafts[0].rating, 4);
+  assert.equal(drafts[0].photoDataUrl, 'data:image/jpeg;base64,AAAA');
+  assert.equal(drafts[0].source, 'https://example.com/x');
+});
+
+test('reads saved web pages and text files', async () => {
+  const html = `<link rel="canonical" href="https://site.com/tacos"><script type="application/ld+json">{"@type":"Recipe","name":"Tacos","recipeIngredient":["1 lb beef"],"recipeInstructions":"Cook."}</script>`;
+  const [d] = await draftsFromFile('Tacos - Site.html', new TextEncoder().encode(html));
+  assert.equal(d.name, 'Tacos');
+  assert.equal(d.source, 'https://site.com/tacos');
+  const t = await draftsFromFile('notes.txt', new TextEncoder().encode(NOTES));
+  assert.equal(t.length, 3);
+});
+
+test('your own relay is tried first', async () => {
+  const calls = [];
+  setCustomRelay('https://relay.example.workers.dev/');
+  await fetchViaRelays('https://site.com/a', 'text', async u => { calls.push(u); return { ok: true, text: async () => 'ok' }; });
+  setCustomRelay('');
+  assert.equal(calls[0], 'https://relay.example.workers.dev/?url=https%3A%2F%2Fsite.com%2Fa');
+});
