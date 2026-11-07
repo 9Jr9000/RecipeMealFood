@@ -344,14 +344,21 @@ function headerWord(line) {
 export function splitRecipeTexts(text) {
   const lines = String(text || '').replace(/\r/g, '').split('\n');
   if (lines.some(l => SEPARATOR.test(l))) {
+    // Split on the --- lines, then each piece on its own "Ingredients" headings too, in case
+    // some recipes in the paste were separated and others weren't.
     const chunks = [];
     let cur = [];
     for (const l of lines) {
       if (SEPARATOR.test(l)) { chunks.push(cur.join('\n')); cur = []; } else cur.push(l);
     }
     chunks.push(cur.join('\n'));
-    return chunks.map(c => c.trim()).filter(Boolean);
+    return chunks.map(c => c.trim()).filter(Boolean).flatMap(c => splitByHeadings(c.split('\n')));
   }
+  return splitByHeadings(lines);
+}
+
+function splitByHeadings(lines) {
+  const text = lines.join('\n');
   const headers = lines.map((l, i) => (INGREDIENT_HEADER.test(headerWord(l)) ? i : -1)).filter(i => i >= 0);
   if (headers.length <= 1) return String(text || '').trim() ? [String(text).trim()] : [];
   // Start of each recipe: walk up from its Ingredients heading past blank and meta lines to the title.

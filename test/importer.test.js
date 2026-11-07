@@ -284,3 +284,9 @@ test('several recipes from one post keep the same source; "From @handle" is the 
   assert.equal(draftsFromText('Pie\nRecipe by @grandma.june\nIngredients\n1 cup flour')[0].creator, '@grandma.june');
   assert.equal(draftsFromText('Pie\nFrom: Grandma’s recipe box\nIngredients\n1 cup flour')[0].source, 'Grandma’s recipe box');
 });
+
+test('a paste can mix --- separators and back-to-back recipes', () => {
+  const ds = draftsFromText('Soup\nIngredients\n1 onion\nSalad\nIngredients\n1 lettuce\n---\nToast\nIngredients\n2 slices bread');
+  assert.deepEqual(ds.map(d => d.name), ['Soup', 'Salad', 'Toast']);
+  assert.equal(ds[0].ingredients, '1 onion');
+});

@@ -21,7 +21,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '19';
+const APP_VERSION = '20';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -39,6 +39,7 @@ const I = {
   trash: svg('<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>'),
   image: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'),
   play: svg('<path d="M7 4v16l13-8z"/>'),
+  wrench: svg('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3 17.8V21h3.2l6.3-6.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'),
   calendar: svg('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'),
   dish: svg('<path d="M3 13h18a9 9 0 0 1-18 0Z"/><path d="M12 4v3M8 5.5 9 8M16 5.5 15 8"/>'),
   home: svg('<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/>'),
@@ -54,7 +55,7 @@ const photos = new Map(); // recipeId -> data URL
 const ui = {
   search: '',
   filters: {}, // category group -> chosen category, e.g. { Meal: 'Dinner', Protein: 'Chicken' }
-  needsAmounts: false, // show only recipes with ingredients that have no measurements
+  sideOpen: new Set(localPref('sideOpen', '').split('|').filter(Boolean)), // sidebar category groups shown open
   sort: localPref('sort', 'name'),
   groceryGroup: localPref('groceryGroup', 'aisle'),
   pantrySearch: '',
@@ -231,21 +232,29 @@ function renderNav(r) {
     ['health', 'Health', I.heart, null],
     ['settings', 'Settings', I.gear, null],
   ];
-  document.getElementById('side-links').innerHTML = links.map(([k, label, icon, n]) => `
+  const fixes = fixUpCount();
+  const sideLinks = [...links];
+  if (fixes || section === 'fixup') sideLinks.splice(1, 0, ['fixup', 'Fix Up', I.wrench, fixes]);
+  document.getElementById('side-links').innerHTML = sideLinks.map(([k, label, icon, n]) => `
     <a class="nav-link ${section === k && !(k === 'recipes' && hasFilters()) ? 'active' : ''}" href="#/${k}" data-action="nav-all">
       ${icon}<span>${label}</span>${n ? `<span class="count">${n}</span>` : ''}
     </a>`).join('');
   document.getElementById('tabbar').innerHTML = links.map(([k, label, icon, n]) => `
-    <a class="tab ${section === k ? 'active' : ''}" href="#/${k}">
+    <a class="tab ${section === k || (k === 'recipes' && section === 'fixup') ? 'active' : ''}" href="#/${k}">
       ${icon}<span>${label}</span>${k === 'grocery' && n ? `<span class="badge">${n}</span>` : ''}
     </a>`).join('');
   const onlyFilter = Object.values(ui.filters).length === 1 ? Object.values(ui.filters)[0] : null;
-  document.getElementById('side-categories').innerHTML = categoryGroupsInUse().map(g => `
-    <h4>${esc(g.name)}</h4>
-    ${g.items.map(c => `
-      <a class="nav-link ${section === 'recipes' && onlyFilter === c ? 'active' : ''}" href="#/recipes" data-action="set-category" data-cat="${esc(c)}" data-only="1">
-        <span>${esc(c)}</span><span class="count">${countIn(c)}</span>
-      </a>`).join('')}`).join('');
+  // Each category group is a dropdown, closed unless you opened it or it holds the current filter.
+  document.getElementById('side-categories').innerHTML = categoryGroupsInUse().map(g => {
+    const chosen = section === 'recipes' ? g.items.find(c => ui.filters[g.name] === c) : null;
+    return `<details class="side-group" data-side="${esc(g.name)}" ${ui.sideOpen.has(g.name) || chosen ? 'open' : ''}>
+      <summary><span>${esc(g.name)}</span>${chosen ? `<span class="side-chosen">${esc(chosen)}</span>` : `<span class="count">${g.items.length}</span>`}</summary>
+      ${g.items.map(c => `
+        <a class="nav-link ${section === 'recipes' && onlyFilter === c ? 'active' : ''}" href="#/recipes" data-action="set-category" data-cat="${esc(c)}" data-only="1">
+          <span>${esc(c)}</span><span class="count">${countIn(c)}</span>
+        </a>`).join('')}
+    </details>`;
+  }).join('');
 }
 
 // ---------- Views ----------
@@ -261,6 +270,7 @@ function render() {
     pantry: viewPantry,
     health: () => renderHealth({ view: $view, esc, toast, openSheet, closeSheet, go, getState: () => state }),
     plan: () => renderPlan(planCtx()),
+    fixup: viewFixUp,
     together: () => renderTogether(planCtx()),
     cooking: () => renderCookMode(cookModeCtx()),
     cook: () => renderCook({ view: $view, esc, toast, go, commit, getState: () => state }),
@@ -320,7 +330,7 @@ function refreshCalories() {
     if (changed && (ui.sort === 'calories' || route().name === 'recipe') && route().name !== 'cooking') render();
   });
 }
-function hasFilters() { return Object.keys(ui.filters).length > 0 || ui.needsAmounts; }
+function hasFilters() { return Object.keys(ui.filters).length > 0; }
 // Cached per ingredients text so the recipe list doesn't re-parse on every keystroke.
 const missingCache = new Map();
 function missingFor(r) {
@@ -331,7 +341,20 @@ function missingFor(r) {
   }
   return missingCache.get(text);
 }
-function needsAmountsCount() { return state.recipes.filter(r => missingFor(r) > 0).length; }
+// What a recipe is missing, for the Fix Up page.
+function issuesOf(r) {
+  return {
+    amounts: missingFor(r),
+    categories: !(r.categories || []).length,
+    ingredients: !String(r.ingredients || '').trim(),
+    directions: !String(r.directions || '').trim(),
+  };
+}
+function needsFixing(r) {
+  const i = issuesOf(r);
+  return i.amounts > 0 || i.categories || i.ingredients || i.directions;
+}
+function fixUpCount() { return state.recipes.filter(needsFixing).length; }
 // "@chefjane" on a TikTok recipe links to their profile.
 function creatorLink(r) {
   const handle = String(r.creator || '').trim();
@@ -351,7 +374,6 @@ function filteredRecipes() {
   let list = state.recipes.filter(r => {
     // Every chosen filter must match (e.g. Dinner AND Chicken).
     if (Object.values(ui.filters).some(c => !(r.categories || []).includes(c))) return false;
-    if (ui.needsAmounts && !missingFor(r)) return false;
     if (!q) return true;
     return [r.name, r.ingredients, (r.categories || []).join(' '), r.source, r.creator]
       .some(f => String(f || '').toLowerCase().includes(q));
@@ -394,11 +416,9 @@ function viewRecipes() {
   const groups = categoryGroupsInUse();
   // Drop filters whose category no longer exists.
   for (const [g, c] of Object.entries(ui.filters)) if (!countIn(c)) delete ui.filters[g];
-  const needs = needsAmountsCount();
-  if (!needs) ui.needsAmounts = false;
-  const chosen = [...Object.values(ui.filters), ...(ui.needsAmounts ? ['Needs Amounts'] : [])];
+  const chosen = Object.values(ui.filters);
   const shown = filteredRecipes().length;
-  const untagged = untaggedRecipes().length;
+  const fixes = fixUpCount();
   $view.innerHTML = `
     <header class="topbar">
       <div class="topbar-row">
@@ -410,17 +430,15 @@ function viewRecipes() {
         <input id="recipe-search" type="search" placeholder="Search recipes, ingredients or creators" value="${esc(ui.search)}" autocomplete="off"></label>` : ''}
     </header>
     <div class="content">
-      ${groups.length || needs ? `<div class="filter-panel">
-        ${groups.map(g => `<div class="filter-row"><span class="filter-label">${esc(g.name)}</span><div class="chips">
-          ${g.items.map(c => `<button class="chip ${ui.filters[g.name] === c ? 'active' : ''}" data-action="set-category" data-cat="${esc(c)}">${esc(c)} <span class="chip-n">${countIn(c)}</span></button>`).join('')}
-        </div></div>`).join('')}
-        ${needs ? `<div class="filter-row"><span class="filter-label">Fix Up</span><div class="chips">
-          <button class="chip ${ui.needsAmounts ? 'active' : ''}" data-action="toggle-needs-amounts" title="Recipes with ingredients that have no measurements">Needs Amounts <span class="chip-n">${needs}</span></button>
-        </div></div>` : ''}
-        ${chosen.length ? `<button class="link-btn" data-action="clear-filters">✕ Clear filters</button>` : ''}
+      ${groups.length ? `<div class="filter-panel filter-selects">
+        ${groups.map(g => `<label class="filter-select ${ui.filters[g.name] ? 'on' : ''}"><span>${esc(g.name)}</span>
+          <select data-filter-group="${esc(g.name)}"><option value="">All</option>
+            ${g.items.map(c => `<option value="${esc(c)}" ${ui.filters[g.name] === c ? 'selected' : ''}>${esc(c)} (${countIn(c)})</option>`).join('')}
+          </select></label>`).join('')}
+        ${chosen.length ? `<button class="link-btn filter-clear" data-action="clear-filters">✕ Clear filters</button>` : ''}
       </div>` : ''}
-      ${untagged ? `<div class="banner">${I.book}<span class="grow">${untagged} recipe${untagged === 1 ? ' has' : 's have'} no categories yet.</span>
-        <button class="btn small" data-action="auto-sort">Sort Automatically</button></div>` : ''}
+      ${fixes ? `<a class="banner fix-banner" href="#/fixup">${I.wrench}<span class="grow">${fixes} recipe${fixes === 1 ? ' needs' : 's need'} fixing — missing amounts, categories or steps.</span>
+        <span class="btn small">Fix Up</span></a>` : ''}
       ${state.recipes.length ? `<div class="list-toolbar"><a class="btn small" href="#/cook">What Can I Make?</a>
         <label>Sort <select id="recipe-sort">
           <option value="name" ${ui.sort === 'name' ? 'selected' : ''}>Name</option>
@@ -431,6 +449,62 @@ function viewRecipes() {
       <div id="recipe-results">${recipeCardsHtml()}</div>
     </div>`;
   refreshCalories();
+}
+
+// Fix Up: recipes missing amounts, categories, ingredients or steps, fixable in place.
+function unitSelectHtml() {
+  return `<select class="fx-unit" aria-label="Unit"><option value="">(no unit)</option>${UNIT_GROUPS.map(([label, units]) =>
+    `<optgroup label="${esc(label)}">${units.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</optgroup>`).join('')}</select>`;
+}
+function viewFixUp() {
+  const sorted = [...state.recipes].sort((a, b) => a.name.localeCompare(b.name));
+  const amounts = sorted.filter(r => missingFor(r) > 0);
+  const untagged = sorted.filter(r => issuesOf(r).categories);
+  const empty = sorted.filter(r => issuesOf(r).ingredients || issuesOf(r).directions);
+  const total = fixUpCount();
+  const units = unitSelectHtml();
+  const link = r => `<a href="#/recipe/${encodeURIComponent(r.id)}">${esc(r.name)}</a>`;
+  const amountCard = r => {
+    const missing = new Set(missingAmounts(r.ingredients).map(p => p.raw));
+    const rows = String(r.ingredients || '').split('\n').map((line, i) => {
+      const p = parseIngredient(line);
+      if (!p || p.header || !missing.has(p.raw)) return '';
+      missing.delete(p.raw); // only the first copy of a repeated line
+      return `<div class="fx-row" data-line="${i}">
+        <span class="fx-name">${esc(p.raw)}</span>
+        <div class="fx-inputs">
+          <input class="input fx-qty" inputmode="decimal" placeholder="Amount" aria-label="Amount for ${esc(p.raw)}" autocomplete="off">
+          ${units}
+          <button type="button" class="btn small primary" data-action="fix-amount" data-id="${esc(r.id)}">Save</button>
+          <button type="button" class="link-btn" data-action="fix-no-amount" data-id="${esc(r.id)}" title="Mark as “as needed” so it isn’t flagged">No amount needed</button>
+        </div></div>`;
+    }).join('');
+    return `<div class="fx-card"><div class="fx-head"><b>${link(r)}</b><a class="btn small" href="#/edit/${encodeURIComponent(r.id)}">${I.edit} Edit</a></div>${rows}</div>`;
+  };
+  $view.innerHTML = `
+    <header class="topbar"><div class="topbar-row">
+      <h1>Fix Up<span class="sub">${total ? `${total} recipe${total === 1 ? ' needs' : 's need'} attention` : 'All your recipes look good'}</span></h1>
+      <a class="icon-btn" href="#/recipes" aria-label="Back to recipes">${I.back}</a>
+    </div></header>
+    <div class="content fixup">
+      ${!total ? `<div class="empty">${I.check}<h2>Nothing to fix</h2><p>Every recipe has amounts, categories, ingredients and steps.</p><a class="btn" href="#/recipes">Back to Recipes</a></div>` : ''}
+      ${amounts.length ? `<section class="fx-section"><h2>Missing Amounts <span class="chip-n">${amounts.length}</span></h2>
+        <p class="hint">Type an amount (like 2, 1 1/2 or ½) and pick a unit. Amounts let the grocery list, pantry, calories and Cook Together work properly. For things like “sauce to drizzle”, tap <b>No amount needed</b>.</p>
+        ${amounts.map(amountCard).join('')}</section>` : ''}
+      ${untagged.length ? `<section class="fx-section"><h2><span class="grow">No Categories <span class="chip-n">${untagged.length}</span></span>
+          ${untagged.length > 1 ? '<button class="btn small" data-action="auto-sort">Sort All Automatically</button>' : ''}</h2>
+        <ul class="fx-list">${untagged.map(r => {
+          const guess = suggestCategories(r);
+          return `<li>${link(r)}<span class="grow fx-guess">${guess.length ? esc(guess.join(', ')) : 'No guess'}</span>
+            ${guess.length ? `<button class="btn small" data-action="fix-cats" data-id="${esc(r.id)}">Add These</button>` : `<a class="btn small" href="#/edit/${encodeURIComponent(r.id)}">Pick</a>`}</li>`;
+        }).join('')}</ul></section>` : ''}
+      ${empty.length ? `<section class="fx-section"><h2>Missing Ingredients or Steps <span class="chip-n">${empty.length}</span></h2>
+        <ul class="fx-list">${empty.map(r => {
+          const i = issuesOf(r);
+          return `<li>${link(r)}<span class="grow fx-guess">${[i.ingredients && 'No ingredients', i.directions && 'No steps'].filter(Boolean).join(' · ')}</span>
+            <a class="btn small" href="#/edit/${encodeURIComponent(r.id)}">${I.edit} Edit</a></li>`;
+        }).join('')}</ul></section>` : ''}
+    </div>`;
 }
 
 // Recipe detail
@@ -1404,7 +1478,7 @@ function handleAction(el, e) {
   const recipe = r.name === 'recipe' ? recipeById(r.id) : null;
   switch (action) {
     case 'nav-all':
-      if (el.getAttribute('href') === '#/recipes') { ui.filters = {}; ui.needsAmounts = false; if (route().name === 'recipes') render(); }
+      if (el.getAttribute('href') === '#/recipes') { ui.filters = {}; if (route().name === 'recipes') render(); }
       break;
     case 'set-category': {
       const cat = el.dataset.cat;
@@ -1417,16 +1491,45 @@ function handleAction(el, e) {
     }
     case 'clear-filters':
       ui.filters = {};
-      ui.needsAmounts = false;
       render();
       break;
     case 'plan-recipe':
       if (recipe) openPlanRecipe(planCtx(), recipe);
       break;
-    case 'toggle-needs-amounts':
-      ui.needsAmounts = !ui.needsAmounts;
-      render();
+    case 'fix-amount':
+    case 'fix-no-amount': {
+      const r = recipeById(el.dataset.id);
+      const row = el.closest('.fx-row');
+      if (!r || !row) break;
+      const lines = String(r.ingredients || '').split('\n');
+      const i = Number(row.dataset.line);
+      const p = parseIngredient(lines[i] || '');
+      if (!p) break;
+      let line;
+      if (action === 'fix-no-amount') {
+        line = `${p.raw}, as needed`;
+      } else {
+        const qty = readQuantity(row.querySelector('.fx-qty').value).qty;
+        if (qty === null) { toast('Type an amount, like 2 or 1 1/2'); row.querySelector('.fx-qty').focus(); break; }
+        const name = /^[A-Z][a-z]/.test(p.raw) ? p.raw[0].toLowerCase() + p.raw.slice(1) : p.raw;
+        line = buildLine({ qty, unit: row.querySelector('.fx-unit').value || null, name });
+      }
+      lines[i] = line;
+      saveRecipe(state, { ...r, ingredients: lines.join('\n') });
+      commit();
+      toast(`Saved: ${line}`);
       break;
+    }
+    case 'fix-cats': {
+      const r = recipeById(el.dataset.id);
+      if (!r) break;
+      const cats = suggestCategories(r);
+      if (!cats.length) { toast('Couldn’t guess — pick categories in the editor'); go(`#/edit/${encodeURIComponent(r.id)}`); break; }
+      saveRecipe(state, { ...r, categories: cats });
+      commit();
+      toast(`${r.name}: ${cats.join(', ')}`);
+      break;
+    }
     case 'auto-sort': {
       const list = untaggedRecipes();
       let n = 0;
@@ -1758,6 +1861,23 @@ document.addEventListener('input', e => {
   }
 });
 
+// Remember which sidebar category dropdowns you opened (not ones opened for the current filter).
+document.addEventListener('click', e => {
+  const summary = e.target.closest('.side-group > summary');
+  if (!summary) return;
+  const d = summary.parentElement;
+  if (d.open) ui.sideOpen.delete(d.dataset.side); else ui.sideOpen.add(d.dataset.side); // about to flip
+  setPref('sideOpen', [...ui.sideOpen].join('|'));
+});
+
+// Enter in a Fix Up amount box saves it.
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('fx-qty')) {
+    e.preventDefault();
+    e.target.closest('.fx-row').querySelector('[data-action=fix-amount]').click();
+  }
+});
+
 document.addEventListener('change', async e => {
   if (e.target.classList.contains('convert') || e.target.id === 'convert-all') {
     const id = route().id;
@@ -1768,6 +1888,10 @@ document.addEventListener('change', async e => {
     } else {
       conv.lines[e.target.dataset.i] = e.target.value;
     }
+    render();
+  } else if (e.target.dataset && e.target.dataset.filterGroup !== undefined) {
+    const group = e.target.dataset.filterGroup;
+    if (e.target.value) ui.filters[group] = e.target.value; else delete ui.filters[group];
     render();
   } else if (e.target.id === 'recipe-sort') {
     ui.sort = e.target.value;
