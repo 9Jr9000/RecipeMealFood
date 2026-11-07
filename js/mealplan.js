@@ -78,6 +78,11 @@ export function weekShopping(state, start) {
   const entries = planForWeek(state, start);
   const counts = new Map();
   for (const e of entries) counts.set(e.recipeId, (counts.get(e.recipeId) || 0) + 1);
+  return { entries, ...shoppingFor(state, counts) };
+}
+
+// Shopping for recipes (id -> how many times each is made), using up pantry amounts as it goes.
+export function shoppingFor(state, counts) {
   // A copy of the pantry whose amounts go down as recipes use them.
   const sim = { ...state, pantry: state.pantry.map(p => ({ ...p })) };
   const recipes = [];
@@ -108,7 +113,7 @@ export function weekShopping(state, start) {
   const have = new Set();
   for (const { rows } of recipes) for (const row of rows) if (!row.header && (row.status === 'pantry' || row.status === 'bought')) have.add(row.parsed.key);
   for (const t of toBuy) have.delete(t.key);
-  return { entries, recipes, toBuy, have: [...have] };
+  return { recipes, toBuy, have: [...have] };
 }
 
 // Adds the week's shopping to the grocery list, skipping ingredient keys in `skip`.

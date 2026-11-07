@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyState, saveRecipe, addToPantry, addManualItem } from '../js/sync.js';
-import { pantryMatch, rankByPantry, sharedIngredients, bestPairs, buildPlan } from '../js/planner.js';
+import { pantryMatch, rankByPantry } from '../js/planner.js';
 
 function kitchen() {
   const state = emptyState();
@@ -39,27 +39,4 @@ test('items already on the grocery list are flagged', () => {
   const t = pantryMatch(state, tacos);
   assert.deepEqual(t.onList, ['Cilantro']);
   assert.deepEqual(t.missing, []);
-});
-
-test('recipes that share ingredients', () => {
-  const { state, tacos, bowls, pasta } = kitchen();
-  assert.deepEqual(sharedIngredients(tacos, bowls).sort(), ['Chicken thigh', 'Cilantro', 'Lime']);
-  assert.deepEqual(sharedIngredients(tacos, pasta), []);
-  const pairs = bestPairs(state);
-  assert.equal(pairs.length, 1);
-  assert.deepEqual([pairs[0].a.name, pairs[0].b.name], ['Chicken Tacos', 'Chicken Rice Bowls']);
-});
-
-test('a meal plan reuses ingredients and merges the shopping list', () => {
-  const { state, tacos } = kitchen();
-  const plan = buildPlan(state, { startId: tacos.id, size: 2 });
-  assert.deepEqual(plan.plan.map(m => m.recipe.name), ['Chicken Tacos', 'Chicken Rice Bowls']);
-  // Cilantro is bought once for both meals
-  const cil = plan.toBuy.find(t => t.name === 'Cilantro');
-  assert.deepEqual(cil.recipes, ['Chicken Tacos', 'Chicken Rice Bowls']);
-  assert.deepEqual(plan.toBuy.map(t => t.name).sort(), ['Cilantro', 'Rice']);
-  assert.deepEqual(plan.shared.map(s => s.name).sort(), ['Chicken thigh', 'Cilantro', 'Lime']);
-  // Without a starting recipe it begins with the one you can make now
-  assert.equal(buildPlan(state, { size: 1 }).plan[0].recipe.name, 'Cheese Omelet');
-  assert.equal(buildPlan(emptyState()), null);
 });

@@ -71,6 +71,7 @@ export function renderPlan(c) {
     <div class="content plan">
       <div class="list-toolbar plan-toolbar">
         ${isThisWeek ? '<span class="plan-this-week">This Week</span>' : '<a class="btn small" href="#/plan">Back to This Week</a>'}
+        <a class="btn small" href="#/together">Cook Together</a>
         <label>Week starts <select data-p="first-day">
           <option value="0" ${firstDay() === 0 ? 'selected' : ''}>Sunday</option>
           <option value="1" ${firstDay() === 1 ? 'selected' : ''}>Monday</option>

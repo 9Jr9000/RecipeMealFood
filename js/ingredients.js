@@ -382,7 +382,7 @@ export const AISLES = [
 const AISLE_RULES = [
   // Names that would otherwise be caught by a more generic word below.
   ['Produce', ['butternut', 'bell pepper', 'green bean', 'sweet potato', 'eggplant', 'cherry tomato', 'lemon juice', 'lime juice', 'lemon zest', 'lime zest', 'fresh ginger', 'ginger root']],
-  ['Pantry & Dry Goods', ['rolled oats', 'bread crumb', 'breadcrumb']],
+  ['Pantry & Dry Goods', ['rolled oats', 'bread crumb', 'breadcrumb', 'egg noodle']],
   ['Bakery & Bread', ['hamburger bun', 'hot dog bun']],
   ['Frozen', ['frozen', 'ice cream', 'sorbet']],
   ['Canned & Jarred', ['canned', 'can of', 'tomato paste', 'tomato sauce', 'crushed tomato', 'diced tomato', 'coconut milk', 'broth', 'stock', 'chickpea', 'black bean', 'kidney bean', 'pinto bean', 'cannellini', 'salsa', 'pickle', 'jam', 'jelly', 'peanut butter', 'tuna']],

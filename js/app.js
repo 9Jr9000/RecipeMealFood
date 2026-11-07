@@ -7,6 +7,8 @@ import { renderCook } from './cook-ui.js';
 import { renderPlan, openPlanRecipe, mealsThisWeek } from './plan-ui.js';
 import { renderCookMode, leaveCookMode, initTimers } from './cookmode-ui.js';
 import { caloriesFor, computeCalories, calorieLabel } from './calorie-cache.js';
+import { renderTogether } from './together-ui.js';
+import { goesWellWith } from './lowwaste.js';
 import {
   parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -19,7 +21,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '16';
+const APP_VERSION = '17';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -220,7 +222,7 @@ window.addEventListener('hashchange', () => {
 
 // ---------- Navigation chrome ----------
 function renderNav(r) {
-  const section = ['recipe', 'edit', 'new', 'cooking'].includes(r.name) ? 'recipes' : r.name === 'cook' ? 'pantry' : r.name;
+  const section = ['recipe', 'edit', 'new', 'cooking'].includes(r.name) ? 'recipes' : r.name === 'cook' ? 'pantry' : r.name === 'together' ? 'plan' : r.name;
   const links = [
     ['recipes', 'Recipes', I.book, state.recipes.length],
     ['plan', 'Plan', I.calendar, mealsThisWeek(state)],
@@ -259,6 +261,7 @@ function render() {
     pantry: viewPantry,
     health: () => renderHealth({ view: $view, esc, toast, openSheet, closeSheet, go, getState: () => state }),
     plan: () => renderPlan(planCtx()),
+    together: () => renderTogether(planCtx()),
     cooking: () => renderCookMode(cookModeCtx()),
     cook: () => renderCook({ view: $view, esc, toast, go, commit, getState: () => state }),
     settings: viewSettings,
@@ -571,6 +574,15 @@ function viewRecipe(id) {
         })()}</ol>` : '<p class="fact">No directions yet.</p>'}
       </section>
       ${r.notes ? `<section class="notes-sec" ${tab !== 'notes' ? 'hidden' : ''}><h2>Notes</h2><div class="notes">${esc(r.notes)}</div></section>` : ''}
+      ${(() => {
+        const pairs = goesWellWith(state, r);
+        if (!pairs.length) return '';
+        return `<section class="goes-with"><h2><span class="grow">Cook With This</span><a class="btn small" href="#/together/recipe/${encodeURIComponent(id)}">Less-Waste Plan</a></h2>
+          <p class="hint">Your recipes that use the same groceries, so less goes to waste.</p>
+          <ul>${pairs.map(p => `<li><a href="#/recipe/${encodeURIComponent(p.recipe.id)}"><b>${esc(p.recipe.name)}</b>
+            <small>${p.usesUp.length ? `Uses up the ${esc(p.usesUp.join(', ').toLowerCase())}` : `Shares ${esc(p.shared.join(', ').toLowerCase())}`}</small></a></li>`).join('')}</ul>
+        </section>`;
+      })()}
     </div>
     </div>`;  if (!caloriesFor(r)) refreshCalories();
 }

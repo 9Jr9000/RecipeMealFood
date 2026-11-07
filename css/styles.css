@@ -974,3 +974,39 @@ body.has-timers .toast { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bott
 .card-cal { font: 700 12px var(--font); color: var(--amber); margin-top: 3px; min-height: 12px; }
 .cal-fact { text-decoration: none; color: var(--ink-soft); }
 .cal-fact small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; margin-top: 1px; }
+
+/* Cook Together (less waste) */
+main[data-section="together"] .topbar { background-color: var(--teal); }
+.tg-controls .field { margin-bottom: 10px; }
+.tg-controls .segmented button:disabled { opacity: .45; }
+.tg-summary {
+  display: flex; flex-direction: column; gap: 2px; margin: 12px 0; padding: 10px 14px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--chrome); border-left: 8px solid #3a9d4a; border-radius: 4px; box-shadow: var(--bevel-plate);
+}
+.tg-summary.mid { border-left-color: var(--amber); }
+.tg-summary.high { border-left-color: var(--signal); }
+.tg-summary b { font-size: 15px; text-transform: uppercase; letter-spacing: .5px; }
+.tg-meals { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
+.tg-meals li {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--chrome); border-radius: 4px; box-shadow: var(--bevel-plate);
+}
+.tg-meals a { min-width: 0; color: var(--ink); text-decoration: none; }
+.tg-meals small, .tg-item small, .goes-with small { display: block; font-size: 12px; color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }
+.tg-useup { margin: 0 0 12px; padding: 10px 12px; background: var(--accent-soft); border: 1px solid var(--signal); border-radius: 4px; }
+.tg-useup h3, .tg-list h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-soft); }
+.tg-useup-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; padding: 4px 0; }
+.tg-actions { margin: 0 0 14px; }
+.tg-list { margin-bottom: 12px; background: var(--surface); border: 1px solid var(--chrome); border-radius: 4px; padding: 10px 12px; box-shadow: var(--bevel-plate); }
+.tg-list ul { list-style: none; margin: 0; padding: 0; }
+.tg-item { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--platinum); min-width: 0; }
+.tg-item .grow { flex: 1; min-width: 0; font-size: 14px; }
+.tg-item .pill { flex: none; white-space: nowrap; }
+.tg-shared { font-size: 10px; font-weight: 700; color: #2f7d3b; text-transform: uppercase; }
+.goes-with { margin-top: 18px; }
+.goes-with h2 { display: flex; align-items: center; gap: 8px; }
+.goes-with ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.goes-with li a {
+  display: block; padding: 8px 10px; color: var(--ink); text-decoration: none;
+  background: var(--surface); border: 1px solid var(--chrome); border-radius: 4px; box-shadow: var(--bevel-plate);
+}
