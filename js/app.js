@@ -21,7 +21,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '18';
+const APP_VERSION = '19';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -1228,8 +1228,12 @@ function importedRowHtml(recipe, d) {
     <a class="btn small" href="#/${d.ingredients ? 'recipe' : 'edit'}/${encodeURIComponent(recipe.id)}">${d.ingredients ? 'View' : 'Edit'}</a>`;
 }
 
+// Already saved: same name and either the same source or the same ingredients. One post or page
+// can hold several recipes ("4 cheap dinners"), so a shared source alone isn't a duplicate.
 function isDuplicate(d) {
-  return state.recipes.find(r => (d.source && r.source === d.source) || (r.name === d.name && (r.ingredients || '') === (d.ingredients || '')));
+  const name = String(d.name || '').trim().toLowerCase();
+  return state.recipes.find(r => String(r.name || '').trim().toLowerCase() === name &&
+    ((d.source && r.source === d.source) || (r.ingredients || '') === (d.ingredients || '')));
 }
 
 // Shows progress while saving a batch of drafts: [{ label, draft } | { label, error }].

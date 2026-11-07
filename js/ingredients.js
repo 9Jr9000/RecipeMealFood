@@ -410,6 +410,8 @@ export function guessAisle(name) {
 
 // ---------- Recipe text import ----------
 
+// "From @chef", "Recipe by @chef", "via @chef", "Credit: @chef", or just "@chef" on its own line.
+const HANDLE_LINE = /^[*_-]*\s*(?:(?:recipe\s+)?(?:from|by|via|credit(?:s)?(?:\s+to)?|inspired by|thanks to)\s*:?\s*)?(@[\w.]{2,})\s*[.!]?\s*$/i;
 export const SOURCE_LINE = /^[*_-]*\s*(source|link|url|recipe from|from|creator|by|author|credit)\s*[*_]*\s*:\s*(.+)$/i;
 
 // Splits pasted recipe text (from a website, message, notes app...) into fields.
@@ -420,9 +422,15 @@ export function parseRecipeText(text) {
   for (const line of lines) {
     if (!line) continue;
     // "Source: https://…" fills the Source field; "Creator: @chefjane" / "By: …" the Creator field.
+    const handle = line.match(HANDLE_LINE);
+    if (handle) {
+      if (!out.creator) out.creator = handle[1];
+      continue;
+    }
     const field = line.match(SOURCE_LINE);
     if (field) {
-      const key = /^(source|link|url|recipe from|from)$/i.test(field[1]) ? 'source' : 'creator';
+      // "From: @chef" names a person; "From: Grandma's cookbook" is where it came from.
+      const key = /^(creator|by|author|credit)$/i.test(field[1]) || /^@[\w.]+$/.test(field[2].trim()) ? 'creator' : 'source';
       if (!out[key]) out[key] = field[2].trim();
       continue;
     }

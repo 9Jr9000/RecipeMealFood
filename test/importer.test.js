@@ -271,3 +271,16 @@ Ingredients
   assert.equal(d.name, 'Salad');
   assert.equal(d.source, 'https://b.com/salad');
 });
+
+test('several recipes from one post keep the same source; "From @handle" is the creator', () => {
+  const block = (name, ing) => `${name}\nIngredients\n${ing}\nDirections\nCook it.\nNotes\nOne of 4 cheap dinners.\nFrom @thebestrecipespot\nSource: https://www.tiktok.com/@thebestrecipespot/photo/769`;
+  const ds = draftsFromText(`${block('Teriyaki Beef Noodles', '12 oz lo mein noodles\nTeriyaki sauce')}\n${block('Creamy Tuscan Sausage Gnocchi', '16 oz gnocchi\nHeavy cream')}`);
+  assert.deepEqual(ds.map(d => d.name), ['Teriyaki Beef Noodles', 'Creamy Tuscan Sausage Gnocchi']);
+  for (const d of ds) {
+    assert.equal(d.source, 'https://www.tiktok.com/@thebestrecipespot/photo/769');
+    assert.equal(d.creator, '@thebestrecipespot');
+    assert.equal(d.notes, 'One of 4 cheap dinners.');
+  }
+  assert.equal(draftsFromText('Pie\nRecipe by @grandma.june\nIngredients\n1 cup flour')[0].creator, '@grandma.june');
+  assert.equal(draftsFromText('Pie\nFrom: Grandma’s recipe box\nIngredients\n1 cup flour')[0].source, 'Grandma’s recipe box');
+});
