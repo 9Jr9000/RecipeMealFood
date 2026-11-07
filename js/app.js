@@ -5,6 +5,7 @@ import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories, migrate
 import { renderHealth } from './health-ui.js';
 import { renderCook } from './cook-ui.js';
 import { renderPlan, openPlanRecipe, mealsThisWeek } from './plan-ui.js';
+import { renderCookMode, leaveCookMode, initTimers } from './cookmode-ui.js';
 import {
   parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -17,7 +18,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '14';
+const APP_VERSION = '15';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -34,6 +35,7 @@ const I = {
   edit: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
   trash: svg('<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>'),
   image: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'),
+  play: svg('<path d="M7 4v16l13-8z"/>'),
   calendar: svg('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'),
   dish: svg('<path d="M3 13h18a9 9 0 0 1-18 0Z"/><path d="M12 4v3M8 5.5 9 8M16 5.5 15 8"/>'),
   home: svg('<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/>'),
@@ -217,7 +219,7 @@ window.addEventListener('hashchange', () => {
 
 // ---------- Navigation chrome ----------
 function renderNav(r) {
-  const section = ['recipe', 'edit', 'new'].includes(r.name) ? 'recipes' : r.name === 'cook' ? 'pantry' : r.name;
+  const section = ['recipe', 'edit', 'new', 'cooking'].includes(r.name) ? 'recipes' : r.name === 'cook' ? 'pantry' : r.name;
   const links = [
     ['recipes', 'Recipes', I.book, state.recipes.length],
     ['plan', 'Plan', I.calendar, mealsThisWeek(state)],
@@ -256,6 +258,7 @@ function render() {
     pantry: viewPantry,
     health: () => renderHealth({ view: $view, esc, toast, openSheet, closeSheet, go, getState: () => state }),
     plan: () => renderPlan(planCtx()),
+    cooking: () => renderCookMode(cookModeCtx()),
     cook: () => renderCook({ view: $view, esc, toast, go, commit, getState: () => state }),
     settings: viewSettings,
   };
@@ -265,6 +268,7 @@ function render() {
   if (r.name === 'health' && $view.dataset.view === `health:${location.hash}` && $view.dataset.section === 'health') return;
   $view.dataset.view = r.name === 'health' ? `health:${location.hash}` : `${r.name}/${r.id}`;
   $view.dataset.section = views[r.name] ? r.name : 'recipes'; // picks the hero tint
+  if (r.name !== 'cooking') leaveCookMode();
   (views[r.name] || viewRecipes)();
   if (r.name === 'new' || r.name === 'edit') refreshSections();
   if (ui.focusAfterRender) {
@@ -274,6 +278,15 @@ function render() {
   }
 }
 
+function cookModeCtx() {
+  return {
+    view: $view, esc, go, toast, openSheet, getState: () => state, photos, icons: I, amountsText,
+    scaleFor: id => ui.scale[id] || 1,
+    getStep: id => ui.step[id],
+    setStep: (id, i) => { ui.step[id] = i; },
+    crossed: id => ui.crossed[id] || (ui.crossed[id] = new Set()),
+  };
+}
 function planCtx() {
   return { view: $view, esc, toast, go, commit, getState: () => state, openSheet, closeSheet, photos, icons: I };
 }
@@ -484,7 +497,8 @@ function viewRecipe(id) {
         ${r.source ? `<div class="source">${source ? `<a href="${esc(source)}" target="_blank" rel="noopener noreferrer">${esc(new URL(source).hostname.replace(/^www\./, ''))}</a>` : esc(r.source)}</div>` : ''}
         ${(r.categories || []).length ? `<div class="cats">${r.categories.map(c => `<span>${esc(c)}</span>`).join('')}</div>` : ''}
         <div class="detail-actions">
-          <button class="btn primary" data-action="open-add-to-list">${I.cart} Add to Grocery List</button>
+          ${steps.length ? `<a class="btn primary" href="#/cooking/${encodeURIComponent(id)}">${I.play} Start Cooking</a>` : ''}
+          <button class="btn ${steps.length ? '' : 'primary'}" data-action="open-add-to-list">${I.cart} Add to Grocery List</button>
           <button class="btn small" data-action="plan-recipe">${I.calendar} Plan</button>
           <a class="btn small" href="#/health/calories/${encodeURIComponent(id)}">${I.heart} Nutrition</a>
         </div>
@@ -520,7 +534,7 @@ function viewRecipe(id) {
           </div>` : '<p class="fact">No ingredients yet.</p>'}
       </section>
       <section ${tab !== 'directions' ? 'hidden' : ''}>
-        <h2>Directions</h2>
+        <h2><span class="grow">Directions</span>${steps.length ? `<a class="btn small primary" href="#/cooking/${encodeURIComponent(id)}">${I.play} Cook Mode</a>` : ''}</h2>
         ${steps.length ? `<ol class="steps">${(() => {
           let n = 0; // step numbers restart in each section
           return steps.map((s, i) => isSectionHeader(s)
@@ -1749,6 +1763,7 @@ async function start() {
     console.error('Could not load saved data', err);
   }
   setCustomRelay(localPref('relay', ''));
+  initTimers(cookModeCtx());
   render();
   const shared = new URLSearchParams(location.search);
   const sharedUrls = extractUrls([shared.get('url'), shared.get('text'), shared.get('title')].filter(Boolean).join(' '));

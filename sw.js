@@ -1,8 +1,8 @@
 // Offline support: always try the network, fall back to the cached app when offline.
-const CACHE = 'recipe-box-v14';
+const CACHE = 'recipe-box-v15';
 const ASSETS = [
   './', 'index.html', 'css/styles.css', 'js/app.js', 'js/db.js', 'js/ingredients.js', 'js/sync.js',
-  'js/cloud.js', 'js/cloudsync.js', 'js/importer.js', 'js/transcript.js', 'js/categories.js', 'js/health.js', 'js/health-ui.js', 'js/planner.js', 'js/cook-ui.js', 'js/mealplan.js', 'js/plan-ui.js', 'js/firebase-config.js',
+  'js/cloud.js', 'js/cloudsync.js', 'js/importer.js', 'js/transcript.js', 'js/categories.js', 'js/health.js', 'js/health-ui.js', 'js/planner.js', 'js/cook-ui.js', 'js/mealplan.js', 'js/plan-ui.js', 'js/cookmode.js', 'js/cookmode-ui.js', 'js/firebase-config.js',
   'js/vendor/firebase/firebase-app.js', 'js/vendor/firebase/firebase-auth.js', 'js/vendor/firebase/firebase-firestore.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
@@ -41,4 +41,14 @@ self.addEventListener('fetch', e => {
         .catch(() => cache.match(e.request, { ignoreSearch: true })),
     ),
   );
+});
+
+// Tapping a "Timer done" notification brings the app back.
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (wins.length) return wins[0].focus();
+    return self.clients.openWindow('./');
+  })());
 });
