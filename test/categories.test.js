@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { suggestCategories, groupOf } from '../js/categories.js';
+import { suggestCategories, groupOf, migrateCategories } from '../js/categories.js';
 
 const s = (name, ingredients = '', extra = {}) => suggestCategories({ name, ingredients, ...extra });
 
 test('protein comes from the name and main ingredients', () => {
   assert.deepEqual(s('Garlic Butter Chicken', '2 lbs chicken thighs\n4 tbsp butter\n6 cloves garlic'), ['Dinner', 'Chicken']);
-  assert.deepEqual(s('Weeknight Tacos', '1 lb ground beef\n8 tortillas\n1 cup salsa'), ['Dinner', 'Beef', 'Tacos & Mexican']);
+  assert.deepEqual(s('Weeknight Tacos', '1 lb ground beef\n8 tortillas\n1 cup salsa'), ['Dinner', 'Beef', 'Tacos & Burritos', 'Mexican']);
   assert.ok(s('Shrimp Scampi', '1 lb shrimp\n8 oz linguine').includes('Seafood'));
   // Broth, fish sauce etc. don't count as the protein
   const soup = s('Vegetable Soup', '4 cups chicken broth\n2 carrots\n2 potatoes\n1 onion');
@@ -46,7 +46,50 @@ test('meatless mains are vegetarian; desserts are not tagged vegetarian', () => 
   assert.ok(!s('Mystery Tacos').includes('Vegetarian'));
 });
 
+test('cooking methods come from the name, directions and notes', () => {
+  assert.ok(s('Air Fryer Chicken Wings', '2 lbs chicken wings').includes('Air Fryer'));
+  assert.ok(s('Crispy Potatoes', '2 lbs potatoes\n1 tbsp oil', { directions: 'Air fry at 400°F for 20 minutes.' }).includes('Air Fryer'));
+  assert.ok(s('Beef Stew', '2 lbs chuck', { directions: 'Pressure cook on high 35 minutes.' }).includes('Instant Pot'));
+  assert.ok(s('One Pan Lemon Chicken').includes('One Pot & Pan'));
+  assert.ok(s('Sheet Pan Fajitas').includes('Sheet Pan'));
+  assert.ok(s('Grilled Salmon').includes('Grilled'));
+  assert.ok(!s('Grilled Cheese').includes('Grilled'));
+  assert.ok(s('Chicken Burrito Bowls', '', { notes: 'Great for meal prep — keeps 4 days.' }).includes('Meal Prep'));
+  assert.ok(s('Lasagna', '', { notes: 'Freezes well for up to 3 months.' }).includes('Freezer Friendly'));
+  assert.ok(s('No-Bake Cheesecake').includes('No Cook'));
+  assert.ok(!s('No-Bake Cheesecake').includes('Casseroles'));
+  assert.ok(s('Tater Tot Casserole').includes('Casseroles'));
+  // Directions that only mention grilling or sheet pans in passing don't count.
+  assert.ok(!s('Cookies', '', { directions: 'Line a sheet pan. Bake 10 minutes.' }).includes('Sheet Pan'));
+});
+
+test('cuisines come from the name and website labels', () => {
+  assert.ok(s('Chicken Tikka Masala').includes('Indian'));
+  assert.ok(s('Thai Green Curry').includes('Thai'));
+  assert.ok(!s('Thai Green Curry').includes('Indian'));
+  assert.ok(s('Beef Bulgogi').includes('Korean'));
+  assert.ok(s('Chicken Teriyaki').includes('Japanese'));
+  assert.ok(s('Kung Pao Chicken').includes('Chinese'));
+  assert.ok(s('Banh Mi').includes('Vietnamese'));
+  assert.ok(s('Chicken Shawarma').includes('Mediterranean'));
+  assert.ok(s('Shrimp and Grits').includes('Cajun & Southern'));
+  assert.ok(s('Chicken and Dumplings').includes('Cajun & Southern'));
+  assert.ok(!s('Chicken and Dumplings').includes('Chinese'));
+  assert.ok(s('Lemon Orzo', '', { hints: 'Main Course, Italian' }).includes('Italian'));
+  assert.ok(s('Chicken Parmigiana').includes('Italian'));
+  assert.deepEqual(s('Plain Rice', '2 cups rice\n4 cups water').filter(c => groupOf(c) === 'Cuisine'), []);
+});
+
+test('old category names are renamed', () => {
+  const recipes = [{ categories: ['Dinner', 'Tacos & Mexican'] }, { categories: ['Lunch'] }];
+  assert.equal(migrateCategories(recipes).length, 1);
+  assert.deepEqual(recipes[0].categories, ['Dinner', 'Tacos & Burritos', 'Mexican']);
+  assert.equal(migrateCategories(recipes).length, 0);
+});
+
 test('groups', () => {
+  assert.equal(groupOf('Air Fryer'), 'Method');
+  assert.equal(groupOf('Italian'), 'Cuisine');
   assert.equal(groupOf('Chicken'), 'Protein');
   assert.equal(groupOf('Dinner'), 'Meal');
   assert.equal(groupOf('Grandma’s'), 'My Categories');

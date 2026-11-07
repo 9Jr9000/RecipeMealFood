@@ -125,3 +125,11 @@ test('describes mixed amounts cleanly', () => {
   assert.equal(describeAmounts([{ qty: 1, unit: 'cup' }, { qty: 2, unit: 'tbsp' }]), '1⅛ cups');
   assert.deepEqual(totalAmount([{ qty: 1, unit: 'cup' }, { qty: 2, unit: 'tbsp' }]), { qty: 1.125, unit: 'cup' });
 });
+
+import { missingAmounts } from '../js/ingredients.js';
+
+test('finds ingredients missing amounts', () => {
+  const text = 'Sauce:\n2 cups flour\nchicken breasts\nGarlic, minced\nSalt and pepper\nSalt to taste\nParsley, for garnish\nPinch of nutmeg\nJuice of 1 lime\nOlive oil';
+  assert.deepEqual(missingAmounts(text).map(p => p.raw), ['chicken breasts', 'Garlic, minced', 'Olive oil']);
+  assert.deepEqual(missingAmounts('1 lb pasta\n2 eggs'), []);
+});

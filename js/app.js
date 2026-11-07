@@ -1,13 +1,13 @@
 import * as db from './db.js';
 import * as cloud from './cloud.js';
 import { extractUrls, draftFromLink, fetchViaRelays, draftsFromText, draftsFromFile, setCustomRelay } from './importer.js';
-import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories } from './categories.js';
+import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories, migrateCategories } from './categories.js';
 import { renderHealth } from './health-ui.js';
 import { renderCook } from './cook-ui.js';
 import {
   parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
-  isConvertible, convertAmount, CONVERT_TARGETS, buildLine, ingredientAmounts, totalAmount,
+  isConvertible, convertAmount, CONVERT_TARGETS, buildLine, ingredientAmounts, totalAmount, missingAmounts,
 } from './ingredients.js';
 import {
   emptyState, uid, saveRecipe, deleteRecipe, recipeListPlan, addRecipeToGrocery, addManualItem,
@@ -16,7 +16,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '12';
+const APP_VERSION = '13';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -47,6 +47,7 @@ const photos = new Map(); // recipeId -> data URL
 const ui = {
   search: '',
   filters: {}, // category group -> chosen category, e.g. { Meal: 'Dinner', Protein: 'Chicken' }
+  needsAmounts: false, // show only recipes with ingredients that have no measurements
   sort: localPref('sort', 'name'),
   groceryGroup: localPref('groceryGroup', 'aisle'),
   pantrySearch: '',
@@ -277,7 +278,29 @@ function categoryGroupsInUse() {
   return groups.filter(g => g.items.length);
 }
 function countIn(cat) { return state.recipes.filter(r => (r.categories || []).includes(cat)).length; }
-function hasFilters() { return Object.keys(ui.filters).length > 0; }
+function hasFilters() { return Object.keys(ui.filters).length > 0 || ui.needsAmounts; }
+// Cached per ingredients text so the recipe list doesn't re-parse on every keystroke.
+const missingCache = new Map();
+function missingFor(r) {
+  const text = r.ingredients || '';
+  if (!missingCache.has(text)) {
+    if (missingCache.size > 2000) missingCache.clear();
+    missingCache.set(text, missingAmounts(text).length);
+  }
+  return missingCache.get(text);
+}
+function needsAmountsCount() { return state.recipes.filter(r => missingFor(r) > 0).length; }
+// "@chefjane" on a TikTok recipe links to their profile.
+function creatorLink(r) {
+  const handle = String(r.creator || '').trim();
+  const m = handle.match(/^@([\w.-]+)$/);
+  let host = '';
+  try { host = new URL(r.source).hostname; } catch { /* not a link */ }
+  if (m && /tiktok\.com$/i.test(host)) return `https://www.tiktok.com/@${m[1]}`;
+  if (m && /instagram\.com$/i.test(host)) return `https://www.instagram.com/${m[1]}/`;
+  if (m && /youtube\.com$|youtu\.be$/i.test(host)) return `https://www.youtube.com/@${m[1]}`;
+  return '';
+}
 function untaggedRecipes() { return state.recipes.filter(r => !(r.categories || []).length); }
 
 // Recipes list
@@ -286,8 +309,9 @@ function filteredRecipes() {
   let list = state.recipes.filter(r => {
     // Every chosen filter must match (e.g. Dinner AND Chicken).
     if (Object.values(ui.filters).some(c => !(r.categories || []).includes(c))) return false;
+    if (ui.needsAmounts && !missingFor(r)) return false;
     if (!q) return true;
-    return [r.name, r.ingredients, (r.categories || []).join(' '), r.source]
+    return [r.name, r.ingredients, (r.categories || []).join(' '), r.source, r.creator]
       .some(f => String(f || '').toLowerCase().includes(q));
   });
   const sorters = {
@@ -308,13 +332,15 @@ function recipeCardsHtml() {
       </div></div>`;
   }
   const list = filteredRecipes();
-  if (!list.length) return `<div class="empty"><h2>No matches</h2><p>No recipes match ${hasFilters() ? 'these categories' : 'your search'}.</p>${hasFilters() ? '<button class="btn" data-action="clear-filters">Show All Recipes</button>' : ''}</div>`;
+  if (!list.length) return `<div class="empty"><h2>No matches</h2><p>No recipes match ${hasFilters() ? 'these filters' : 'your search'}.</p>${hasFilters() ? '<button class="btn" data-action="clear-filters">Show All Recipes</button>' : ''}</div>`;
   return `<div class="recipe-grid">${list.map(r => {
     const time = [r.prepTime && `Prep ${r.prepTime}`, r.cookTime && `Cook ${r.cookTime}`].filter(Boolean)[0] || '';
     return `<a class="card" href="#/recipe/${encodeURIComponent(r.id)}">
       <div class="photo">${photos.get(r.id) ? `<img src="${photos.get(r.id)}" alt="" loading="lazy">` : I.dish}</div>
       <div class="body"><h3>${esc(r.name)}</h3>
+        ${r.creator ? `<div class="by">${esc(r.creator)}</div>` : ''}
         <div class="meta">${stars(r.rating)}${time ? `<span>${esc(time)}</span>` : ''}</div>
+        ${missingFor(r) ? `<span class="needs-badge" title="${missingFor(r)} ingredient${missingFor(r) === 1 ? ' has' : 's have'} no amount">Needs amounts</span>` : ''}
       </div></a>`;
   }).join('')}</div>`;
 }
@@ -323,7 +349,9 @@ function viewRecipes() {
   const groups = categoryGroupsInUse();
   // Drop filters whose category no longer exists.
   for (const [g, c] of Object.entries(ui.filters)) if (!countIn(c)) delete ui.filters[g];
-  const chosen = Object.values(ui.filters);
+  const needs = needsAmountsCount();
+  if (!needs) ui.needsAmounts = false;
+  const chosen = [...Object.values(ui.filters), ...(ui.needsAmounts ? ['Needs Amounts'] : [])];
   const shown = filteredRecipes().length;
   const untagged = untaggedRecipes().length;
   $view.innerHTML = `
@@ -334,13 +362,16 @@ function viewRecipes() {
         <a class="icon-btn" href="#/new" aria-label="Add recipe" title="Add recipe">${I.plus}</a>
       </div>
       ${state.recipes.length ? `<label class="search">${I.search}<span class="sr-only">Search recipes</span>
-        <input id="recipe-search" type="search" placeholder="Search recipes or ingredients" value="${esc(ui.search)}" autocomplete="off"></label>` : ''}
+        <input id="recipe-search" type="search" placeholder="Search recipes, ingredients or creators" value="${esc(ui.search)}" autocomplete="off"></label>` : ''}
     </header>
     <div class="content">
-      ${groups.length ? `<div class="filter-panel">
+      ${groups.length || needs ? `<div class="filter-panel">
         ${groups.map(g => `<div class="filter-row"><span class="filter-label">${esc(g.name)}</span><div class="chips">
           ${g.items.map(c => `<button class="chip ${ui.filters[g.name] === c ? 'active' : ''}" data-action="set-category" data-cat="${esc(c)}">${esc(c)} <span class="chip-n">${countIn(c)}</span></button>`).join('')}
         </div></div>`).join('')}
+        ${needs ? `<div class="filter-row"><span class="filter-label">Fix Up</span><div class="chips">
+          <button class="chip ${ui.needsAmounts ? 'active' : ''}" data-action="toggle-needs-amounts" title="Recipes with ingredients that have no measurements">Needs Amounts <span class="chip-n">${needs}</span></button>
+        </div></div>` : ''}
         ${chosen.length ? `<button class="link-btn" data-action="clear-filters">✕ Clear filters</button>` : ''}
       </div>` : ''}
       ${untagged ? `<div class="banner">${I.book}<span class="grow">${untagged} recipe${untagged === 1 ? ' has' : 's have'} no categories yet.</span>
@@ -371,6 +402,7 @@ function viewRecipe(id) {
   const conv = ui.convert[id] || { all: '', lines: {} };
   const anyConvertible = ingredients.some(p => p.qty !== null && isConvertible(p.unit));
 
+  const missing = new Set(missingAmounts(r.ingredients).map(p => p.raw));
   const ingHtml = ingredients.map((p, i) => {
     if (p.header) return `<li class="header">${esc(p.header)}</li>`;
     const amounts = ingredientAmounts(p, factor);
@@ -411,8 +443,9 @@ function viewRecipe(id) {
       need: 'Not in your pantry',
     }[status];
     const icon = status === 'list' ? I.cart : status === 'need' ? '' : status === 'low' ? '!' : I.check;
-    return `<li class="${crossed.has(i) ? 'crossed' : ''}" data-action="cross-ingredient" data-i="${i}">
-      <span class="status-dot ${status}" title="${title}">${icon}</span><span class="txt">${text}</span></li>`;
+    const noAmt = missing.has(p.raw);
+    return `<li class="${crossed.has(i) ? 'crossed' : ''} ${noAmt ? 'no-amt' : ''}" data-action="cross-ingredient" data-i="${i}">
+      <span class="status-dot ${status}" title="${title}">${icon}</span><span class="txt">${text}${noAmt ? ' <span class="no-amt-tag">no amount</span>' : ''}</span></li>`;
   }).join('');
 
   const scaleLabel = baseServings ? `${formatAmount(baseServings * factor)} serving${baseServings * factor === 1 ? '' : 's'}` : `${formatAmount(factor)}×`;
@@ -439,6 +472,7 @@ function viewRecipe(id) {
           ${r.prepTime ? `<div class="fact">Prep time<b>${esc(r.prepTime)}</b></div>` : ''}
           ${r.cookTime ? `<div class="fact">Cook time<b>${esc(r.cookTime)}</b></div>` : ''}
         </div>
+        ${r.creator ? `<div class="creator">by ${creatorLink(r) ? `<a href="${esc(creatorLink(r))}" target="_blank" rel="noopener noreferrer">${esc(r.creator)}</a>` : esc(r.creator)}</div>` : ''}
         ${r.source ? `<div class="source">${source ? `<a href="${esc(source)}" target="_blank" rel="noopener noreferrer">${esc(new URL(source).hostname.replace(/^www\./, ''))}</a>` : esc(r.source)}</div>` : ''}
         ${(r.categories || []).length ? `<div class="cats">${r.categories.map(c => `<span>${esc(c)}</span>`).join('')}</div>` : ''}
         <div class="detail-actions">
@@ -457,6 +491,8 @@ function viewRecipe(id) {
         <h2><span class="grow">Ingredients</span>
           <span class="scale"><button data-action="scale" data-d="-1" aria-label="Scale down">−</button><span>${esc(scaleLabel)}</span><button data-action="scale" data-d="1" aria-label="Scale up">+</button></span>
         </h2>
+        ${missing.size ? `<div class="banner needs">${I.edit}<span class="grow">${missing.size} ingredient${missing.size === 1 ? ' has' : 's have'} no amount, so ${missing.size === 1 ? 'it' : 'they'} can’t be checked against your pantry.</span>
+          <a class="btn small" href="#/edit/${encodeURIComponent(id)}">Add Amounts</a></div>` : ''}
         ${ingredients.length ? `
           <div class="have-summary">
             ${counts.pantry + counts.bought ? `<span class="pill pantry">${I.check} Have ${counts.pantry + counts.bought}</span>` : ''}
@@ -528,7 +564,10 @@ function viewEditor(id) {
         <label class="field"><span>Prep time</span>${choiceSelect('prepTime', r?.prepTime || '', TIME_OPTIONS, '—')}</label>
         <label class="field"><span>Cook time</span>${choiceSelect('cookTime', r?.cookTime || '', TIME_OPTIONS, '—')}</label>
       </div>
-      <label class="field"><span>Source</span><input name="source" value="${esc(r?.source)}" placeholder="Website, book, or person"></label>
+      <div class="row-fields two">
+        <label class="field"><span>Source</span><input name="source" value="${esc(r?.source)}" placeholder="Website, book, or link"></label>
+        <label class="field"><span>Creator</span><input name="creator" value="${esc(r?.creator)}" placeholder="@handle or chef’s name" autocomplete="off"></label>
+      </div>
       <div class="field"><span>Ingredients</span>
         <div class="hint" style="margin:0 0 8px">Making more than one thing (like a marinade, a sauce and rice)? Use <b>Add Another Section</b> to split the list.</div>
         <div id="ing-rows" class="ing-sections">${sectionsHtml(r ? parseIngredients(r.ingredients) : [])}</div>
@@ -652,6 +691,7 @@ async function submitEditor(form) {
     prepTime: String(fd.get('prepTime')).trim(),
     cookTime: String(fd.get('cookTime')).trim(),
     source: String(fd.get('source')).trim(),
+    creator: String(fd.get('creator') || '').trim(),
     ingredients: editorIngredients(),
     directions: String(fd.get('directions')).trim(),
     notes: String(fd.get('notes')).trim(),
@@ -1097,7 +1137,7 @@ async function importFiles(files) {
 // Saves an imported draft as a recipe (with its photo if there is one).
 async function saveDraft(d, fallbackSource = '') {
   const recipe = saveRecipe(state, {
-    id: uid(), name: d.name || 'Imported recipe', source: d.source || fallbackSource, ingredients: d.ingredients || '',
+    id: uid(), name: d.name || 'Imported recipe', source: d.source || fallbackSource, creator: d.creator || '', ingredients: d.ingredients || '',
     directions: d.directions || '', notes: d.notes || '', servings: d.servings || '', prepTime: d.prepTime || '', cookTime: d.cookTime || '',
     categories: d.categories && d.categories.length ? d.categories : suggestCategories(d), rating: d.rating || 0,
   });
@@ -1291,7 +1331,7 @@ function handleAction(el, e) {
   const recipe = r.name === 'recipe' ? recipeById(r.id) : null;
   switch (action) {
     case 'nav-all':
-      if (el.getAttribute('href') === '#/recipes') { ui.filters = {}; if (route().name === 'recipes') render(); }
+      if (el.getAttribute('href') === '#/recipes') { ui.filters = {}; ui.needsAmounts = false; if (route().name === 'recipes') render(); }
       break;
     case 'set-category': {
       const cat = el.dataset.cat;
@@ -1304,6 +1344,11 @@ function handleAction(el, e) {
     }
     case 'clear-filters':
       ui.filters = {};
+      ui.needsAmounts = false;
+      render();
+      break;
+    case 'toggle-needs-amounts':
+      ui.needsAmounts = !ui.needsAmounts;
       render();
       break;
     case 'auto-sort': {
@@ -1667,11 +1712,20 @@ document.addEventListener('change', async e => {
   }
 });
 
+// Categories renamed in an update ("Tacos & Mexican" -> "Tacos & Burritos" + "Mexican").
+function renameOldCategories() {
+  const changed = migrateCategories(state.recipes);
+  for (const r of changed) saveRecipe(state, { ...r }); // marks them updated so the rename syncs
+  if (changed.length) commit();
+  return changed.length > 0;
+}
+
 // ---------- Start ----------
 async function start() {
   try {
     const saved = await db.get('state');
     if (saved) state = normalizeState(saved);
+    renameOldCategories();
     for (const r of state.recipes) {
       if (r.photo) {
         const url = await db.get(`photo:${r.id}`);
@@ -1694,7 +1748,7 @@ async function start() {
     getState: () => state,
     photos,
     // Changes arrived from another phone: save them here and redraw.
-    onRemote: () => { db.set('state', state); render(); },
+    onRemote: () => { if (!renameOldCategories()) db.set('state', state); render(); },
     onStatus: () => {
       const signedIn = cloud.isSignedIn();
       if (signedIn) syncError = '';

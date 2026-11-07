@@ -813,3 +813,16 @@ main[data-section="cook"] .topbar { background-color: var(--games-red); }
 .cook-sub { margin: 10px 0; }
 .cook-buy { margin-top: 6px; }
 .settings-card .btn.block { width: calc(100% - 28px); }
+
+/* Creator credit and "needs amounts" flag */
+.card .by { font-size: 11px; color: var(--ice); margin: -1px 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.needs-badge {
+  display: inline-block; margin-top: 5px; padding: 2px 6px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+  background: var(--accent-soft); color: #8a4a00; border: 1px solid var(--signal); border-radius: 2px;
+}
+.detail .creator { font-size: 14px; font-weight: 700; color: var(--ink-soft); margin-bottom: 4px; }
+.banner.needs { margin: 0 0 12px; border-left-color: var(--signal); }
+.no-amt-tag {
+  display: inline-block; margin-left: 4px; padding: 0 5px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+  color: #8a4a00; background: var(--accent-soft); border-radius: 2px; vertical-align: 1px;
+}

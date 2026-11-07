@@ -528,3 +528,18 @@ export function buildLine({ qty = null, qtyMax = null, unit = null, extras = [],
   }
   return `${amount} ${String(name).trim()}`.trim();
 }
+
+// ---------- Missing amounts ----------
+
+// Lines that are fine without an amount: "salt to taste", "oil for frying", "parsley, for garnish".
+const NO_AMOUNT_OK = /\b(to taste|as needed|as desired|if desired|optional|for (garnish|garnishing|serving|topping|frying|greasing|dusting|drizzling|the pan)|to (serve|garnish)|cooking spray|nonstick spray|non-stick spray|water)\b/i;
+const SEASONING_ONLY = /^(salt|pepper|black pepper|salt (and|&) (black )?pepper|kosher salt|sea salt|ice)$/;
+
+// Ingredient lines with no measurement ("chicken breasts", "garlic"), skipping headers and
+// lines that are normally written without one.
+export function missingAmounts(text) {
+  return parseIngredients(text).filter(p =>
+    !p.header && p.qty === null && !p.unit && !NO_AMOUNT_OK.test(p.raw) && !SEASONING_ONLY.test(p.key) &&
+    // An amount later in the line still counts: "juice of 1 lime", "chicken (about 2 lbs)".
+    !/\d|[¼½¾⅓⅔⅛]|\b(one|two|three|four|five|six|half|a dozen)\b/i.test(p.raw));
+}

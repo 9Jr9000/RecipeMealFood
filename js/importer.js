@@ -6,6 +6,7 @@
 // fetching is passed in.
 
 import { parseRecipeText } from './ingredients.js';
+import { parseTranscript, looksLikeTranscript, spokenIngredients, transcriptSentences } from './transcript.js';
 
 // ---------- Links ----------
 
@@ -142,7 +143,7 @@ function metaTags(html) {
 }
 
 function emptyDraft(url) {
-  return { name: '', source: url || '', imageUrl: '', ingredients: '', directions: '', servings: '', prepTime: '', cookTime: '', notes: '', hints: '' };
+  return { name: '', source: url || '', imageUrl: '', ingredients: '', directions: '', servings: '', prepTime: '', cookTime: '', notes: '', hints: '', creator: '' };
 }
 
 // Reads a recipe out of a web page's HTML. Returns null when nothing recipe-like is found.
@@ -161,6 +162,7 @@ export function recipeFromHtml(html, url = '') {
     d.cookTime = isoDuration(recipe.cookTime) || (!d.prepTime ? isoDuration(recipe.totalTime) : '');
     // The site's own labels ("Main Course", "Mexican", keywords) help pick categories.
     d.hints = [recipe.recipeCategory, recipe.recipeCuisine, recipe.keywords].flatMap(asArray).map(x => clean(x)).join(', ');
+    d.creator = authorName(recipe.author) || creatorFromUrl(url);
     const desc = clean(recipe.description || '');
     if (desc && desc.length < 600) d.notes = desc;
     return d;
@@ -171,8 +173,25 @@ export function recipeFromHtml(html, url = '') {
   if (!caption && !title) return null;
   const d = captionDraft(caption || title, url);
   if (!d.name && title) d.name = cleanTitle(title);
+  d.creator = d.creator || creatorFromUrl(url);
   d.imageUrl = d.imageUrl || meta['og:image'] || '';
   return d;
+}
+
+// schema.org author: "Jane Doe", { name }, or a list of them.
+function authorName(a) {
+  const names = asArray(a).map(x => clean(typeof x === 'string' ? x : x && x.name)).filter(Boolean);
+  return names.join(', ').slice(0, 80);
+}
+
+// "https://www.tiktok.com/@chefjane/video/123" -> "@chefjane" (TikTok, Instagram, YouTube handles).
+export function creatorFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const m = u.pathname.match(/^\/@([\w.-]+)/);
+    if (m && /(tiktok|youtube)\.com$/i.test(u.hostname)) return `@${m[1]}`;
+  } catch { /* not a link */ }
+  return '';
 }
 
 function cleanTitle(t) {
@@ -221,6 +240,14 @@ export function captionDraft(caption, url = '') {
   d.servings = parsed.servings;
   d.prepTime = parsed.prepTime;
   d.cookTime = parsed.cookTime;
+  if (!d.ingredients && spokenIngredients(text).length >= 2) {
+    // A chatty caption ("add two cups of flour then...") - pick out the spoken amounts and steps.
+    const t = parseTranscript(text);
+    const first = transcriptSentences(text)[0] || '';
+    d.name = t.name || (first.split(/\s+/).length <= 8 ? first.replace(/[.!]+$/, '') : '');
+    d.ingredients = t.ingredients;
+    d.directions = t.directions;
+  }
   if (!d.ingredients && !d.directions) {
     // Nothing structured: keep the whole caption so nothing is lost.
     d.notes = lines.slice(1).join('\n');
@@ -234,6 +261,8 @@ export function recipeFromTikTokOEmbed(data, url = '') {
   const caption = String(data.title || '');
   const d = captionDraft(caption, url);
   if (!d.name) d.name = data.author_name ? `TikTok recipe by ${data.author_name}` : 'TikTok recipe';
+  // Creator credit: the @handle from the profile link, else the display name.
+  d.creator = creatorFromUrl(data.author_url || '') || creatorFromUrl(url) || clean(data.author_name || '');
   d.imageUrl = data.thumbnail_url || '';
   return d;
 }
@@ -338,6 +367,12 @@ export function splitRecipeTexts(text) {
 export function draftsFromText(text, source = '') {
   return splitRecipeTexts(text).map(chunk => {
     const p = parseRecipeText(chunk);
+    // Spoken transcripts ("so add two cups of flour, then...") have no ingredient list to find.
+    const written = p.ingredients && !p.ingredients.split('\n').some(l => l.length > 120);
+    if (!written && looksLikeTranscript(chunk)) {
+      const t = parseTranscript(chunk);
+      return { ...emptyDraft(source), name: t.name || 'Recipe from transcript', ingredients: t.ingredients, directions: t.directions, notes: chunk };
+    }
     return { ...emptyDraft(source), ...p, directions: p.directions.replace(/\n\n/g, '\n') };
   }).filter(d => d.name && (d.ingredients || d.directions || d.notes));
 }
