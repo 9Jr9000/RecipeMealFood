@@ -4,6 +4,7 @@ import { extractUrls, draftFromLink, fetchViaRelays, draftsFromText, draftsFromF
 import { CATEGORY_GROUPS, PRESET_CATEGORIES, groupOf, suggestCategories, migrateCategories } from './categories.js';
 import { renderHealth } from './health-ui.js';
 import { renderCook } from './cook-ui.js';
+import { renderPlan, openPlanRecipe, mealsThisWeek } from './plan-ui.js';
 import {
   parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -16,7 +17,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '13';
+const APP_VERSION = '14';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -33,6 +34,7 @@ const I = {
   edit: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
   trash: svg('<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>'),
   image: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'),
+  calendar: svg('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'),
   dish: svg('<path d="M3 13h18a9 9 0 0 1-18 0Z"/><path d="M12 4v3M8 5.5 9 8M16 5.5 15 8"/>'),
   home: svg('<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/>'),
   clipboard: svg('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>'),
@@ -218,6 +220,7 @@ function renderNav(r) {
   const section = ['recipe', 'edit', 'new'].includes(r.name) ? 'recipes' : r.name === 'cook' ? 'pantry' : r.name;
   const links = [
     ['recipes', 'Recipes', I.book, state.recipes.length],
+    ['plan', 'Plan', I.calendar, mealsThisWeek(state)],
     ['grocery', 'Groceries', I.cart, uncheckedCount()],
     ['pantry', 'Pantry', I.pantry, state.pantry.length],
     ['health', 'Health', I.heart, null],
@@ -252,6 +255,7 @@ function render() {
     grocery: viewGrocery,
     pantry: viewPantry,
     health: () => renderHealth({ view: $view, esc, toast, openSheet, closeSheet, go, getState: () => state }),
+    plan: () => renderPlan(planCtx()),
     cook: () => renderCook({ view: $view, esc, toast, go, commit, getState: () => state }),
     settings: viewSettings,
   };
@@ -268,6 +272,10 @@ function render() {
     ui.focusAfterRender = null;
     if (el) el.focus();
   }
+}
+
+function planCtx() {
+  return { view: $view, esc, toast, go, commit, getState: () => state, openSheet, closeSheet, photos, icons: I };
 }
 
 // Categories in use, grouped (Meal / Protein / Type / My Categories), in preset order.
@@ -477,6 +485,7 @@ function viewRecipe(id) {
         ${(r.categories || []).length ? `<div class="cats">${r.categories.map(c => `<span>${esc(c)}</span>`).join('')}</div>` : ''}
         <div class="detail-actions">
           <button class="btn primary" data-action="open-add-to-list">${I.cart} Add to Grocery List</button>
+          <button class="btn small" data-action="plan-recipe">${I.calendar} Plan</button>
           <a class="btn small" href="#/health/calories/${encodeURIComponent(id)}">${I.heart} Nutrition</a>
         </div>
       </div>
@@ -1320,6 +1329,7 @@ function normalizeState(s) {
     recipes: Array.isArray(s.recipes) ? s.recipes : base.recipes,
     grocery: Array.isArray(s.grocery) ? s.grocery.map(g => ({ note: '', parts: [], ...g })) : base.grocery,
     pantry: Array.isArray(s.pantry) ? s.pantry : base.pantry,
+    plan: Array.isArray(s.plan) ? s.plan : base.plan,
     aisleOverrides: s.aisleOverrides && typeof s.aisleOverrides === 'object' ? s.aisleOverrides : {},
   };
 }
@@ -1346,6 +1356,9 @@ function handleAction(el, e) {
       ui.filters = {};
       ui.needsAmounts = false;
       render();
+      break;
+    case 'plan-recipe':
+      if (recipe) openPlanRecipe(planCtx(), recipe);
       break;
     case 'toggle-needs-amounts':
       ui.needsAmounts = !ui.needsAmounts;

@@ -8,10 +8,10 @@
 
 import { keysMatch } from './sync.js';
 
-export const COLLECTIONS = ['recipes', 'grocery', 'pantry', 'meta'];
+export const COLLECTIONS = ['recipes', 'grocery', 'pantry', 'plan', 'meta'];
 
 export function emptyBase() {
-  return { recipes: {}, grocery: {}, pantry: {}, meta: {}, photos: {} };
+  return { recipes: {}, grocery: {}, pantry: {}, plan: {}, meta: {}, photos: {} };
 }
 
 // JSON with sorted keys, so the same data always gives the same string.
@@ -50,14 +50,14 @@ export function stateAccessor(getState, col) {
     };
   }
   return {
-    ids: () => getState()[col].map(x => x.id),
-    get: id => getState()[col].find(x => x.id === id),
+    ids: () => (getState()[col] || []).map(x => x.id),
+    get: id => (getState()[col] || []).find(x => x.id === id),
     set: (id, value) => {
-      const list = getState()[col];
+      const list = getState()[col] || (getState()[col] = []);
       const i = list.findIndex(x => x.id === id);
       if (i >= 0) list[i] = value; else list.push(value);
     },
-    remove: id => { getState()[col] = getState()[col].filter(x => x.id !== id); },
+    remove: id => { getState()[col] = (getState()[col] || []).filter(x => x.id !== id); },
     canon: canonical,
     // Firestore rejects undefined values; a JSON round trip drops them.
     toDoc: value => JSON.parse(JSON.stringify(value)),

@@ -6,6 +6,7 @@
 //               source, categories: [], rating, photo, created, updated }],
 //   grocery: [{ id, key, name, aisle, checked, note, parts: [{ recipeId, recipeName, qty, unit }] }],
 //   pantry:  [{ id, key, name, aisle, qty, unit, added }],  // qty null = have it, amount unknown
+//   plan:    [{ id, date, recipeId, meal, updated }],    // weekly meal plan (js/mealplan.js)
 //   aisleOverrides: { [key]: aisle },   // aisles the user picked, remembered per item
 // }
 
@@ -23,7 +24,7 @@ export function uid() {
 }
 
 export function emptyState() {
-  return { recipes: [], grocery: [], pantry: [], aisleOverrides: {} };
+  return { recipes: [], grocery: [], pantry: [], plan: [], aisleOverrides: {} };
 }
 
 // Descriptors that don't change what you'd buy: "kosher salt" is covered by "salt".
@@ -291,6 +292,7 @@ export function saveRecipe(state, recipe) {
 
 export function deleteRecipe(state, recipeId) {
   state.recipes = state.recipes.filter(r => r.id !== recipeId);
+  if (state.plan) state.plan = state.plan.filter(e => e.recipeId !== recipeId);
   removeRecipeFromGrocery(state, recipeId);
   // Checked items keep their amounts but no longer point at a deleted recipe.
   for (const g of state.grocery) {
