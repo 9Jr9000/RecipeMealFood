@@ -21,7 +21,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '20';
+const APP_VERSION = '21';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -39,6 +39,7 @@ const I = {
   trash: svg('<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>'),
   image: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'),
   play: svg('<path d="M7 4v16l13-8z"/>'),
+  link: svg('<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>'),
   wrench: svg('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3 17.8V21h3.2l6.3-6.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'),
   calendar: svg('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'),
   dish: svg('<path d="M3 13h18a9 9 0 0 1-18 0Z"/><path d="M12 4v3M8 5.5 9 8M16 5.5 15 8"/>'),
@@ -65,6 +66,7 @@ const ui = {
   step: {}, // recipeId -> active step index
   convert: {}, // recipeId -> { all: unit, lines: { index: unit } } for the unit dropdowns
   focusAfterRender: null,
+  backTo: '#/recipes', // the recipe page's back arrow
 };
 
 function localPref(key, fallback) {
@@ -214,7 +216,13 @@ function route() {
   return { name, id: id ? decodeURIComponent(id) : null };
 }
 function go(path) { location.hash = path; }
+// Where a recipe page's back arrow goes: Fix Up when you came from there, else Recipes.
+let lastRouteName = route().name;
 window.addEventListener('hashchange', () => {
+  const now = route().name;
+  if (lastRouteName === 'fixup' && (now === 'recipe' || now === 'edit')) ui.backTo = '#/fixup';
+  else if (now === 'recipe' && !['edit', 'cooking', 'recipe', 'health', 'new'].includes(lastRouteName)) ui.backTo = '#/recipes';
+  lastRouteName = now;
   closeSheet();
   ui.detailTab = 'ingredients';
   render();
@@ -463,7 +471,14 @@ function viewFixUp() {
   const empty = sorted.filter(r => issuesOf(r).ingredients || issuesOf(r).directions);
   const total = fixUpCount();
   const units = unitSelectHtml();
-  const link = r => `<a href="#/recipe/${encodeURIComponent(r.id)}">${esc(r.name)}</a>`;
+  const link = r => `<a class="fx-recipe" href="#/recipe/${encodeURIComponent(r.id)}" title="Open the recipe">${esc(r.name)} ›</a>`;
+  // The original page or video, to check amounts against.
+  const sourceBtn = r => {
+    const url = safeUrl(r.source);
+    if (!url) return r.source ? `<span class="fx-src-text">Source: ${esc(r.source)}</span>` : '';
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    return `<a class="btn small fx-src" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(host)} in a new tab">${I.link} ${esc(/tiktok\.com$/.test(host) ? 'TikTok' : host)} ↗</a>`;
+  };
   const amountCard = r => {
     const missing = new Set(missingAmounts(r.ingredients).map(p => p.raw));
     const rows = String(r.ingredients || '').split('\n').map((line, i) => {
@@ -479,7 +494,8 @@ function viewFixUp() {
           <button type="button" class="link-btn" data-action="fix-no-amount" data-id="${esc(r.id)}" title="Mark as “as needed” so it isn’t flagged">No amount needed</button>
         </div></div>`;
     }).join('');
-    return `<div class="fx-card"><div class="fx-head"><b>${link(r)}</b><a class="btn small" href="#/edit/${encodeURIComponent(r.id)}">${I.edit} Edit</a></div>${rows}</div>`;
+    return `<div class="fx-card"><div class="fx-head"><div class="fx-title">${link(r)}${r.creator ? `<small>${esc(r.creator)}</small>` : ''}</div>
+      <div class="fx-btns">${sourceBtn(r)}<a class="btn small" href="#/edit/${encodeURIComponent(r.id)}">${I.edit} Edit</a></div></div>${rows}</div>`;
   };
   $view.innerHTML = `
     <header class="topbar"><div class="topbar-row">
@@ -502,7 +518,7 @@ function viewFixUp() {
         <ul class="fx-list">${empty.map(r => {
           const i = issuesOf(r);
           return `<li>${link(r)}<span class="grow fx-guess">${[i.ingredients && 'No ingredients', i.directions && 'No steps'].filter(Boolean).join(' · ')}</span>
-            <a class="btn small" href="#/edit/${encodeURIComponent(r.id)}">${I.edit} Edit</a></li>`;
+            ${sourceBtn(r)}<a class="btn small" href="#/edit/${encodeURIComponent(r.id)}">${I.edit} Edit</a></li>`;
         }).join('')}</ul></section>` : ''}
     </div>`;
 }
@@ -577,7 +593,7 @@ function viewRecipe(id) {
   $view.innerHTML = `
     <div class="detail">
     <header class="topbar"><div class="topbar-row">
-      <a class="icon-btn" href="#/recipes" aria-label="Back to recipes">${I.back}</a>
+      <a class="icon-btn" href="${ui.backTo || '#/recipes'}" aria-label="${ui.backTo === '#/fixup' ? 'Back to Fix Up' : 'Back to recipes'}">${I.back}</a>
       <span class="spacer"></span>
       <button class="icon-btn" data-action="open-add-to-list" aria-label="Add to grocery list" title="Add to grocery list">${I.cart}</button>
       <a class="icon-btn" href="#/edit/${encodeURIComponent(id)}" aria-label="Edit recipe" title="Edit">${I.edit}</a>
@@ -620,6 +636,7 @@ function viewRecipe(id) {
           <span class="scale"><button data-action="scale" data-d="-1" aria-label="Scale down">−</button><span>${esc(scaleLabel)}</span><button data-action="scale" data-d="1" aria-label="Scale up">+</button></span>
         </h2>
         ${missing.size ? `<div class="banner needs">${I.edit}<span class="grow">${missing.size} ingredient${missing.size === 1 ? ' has' : 's have'} no amount, so ${missing.size === 1 ? 'it' : 'they'} can’t be checked against your pantry.</span>
+          ${source ? `<a class="btn small" href="${esc(source)}" target="_blank" rel="noopener noreferrer">${I.link} Check Source ↗</a>` : ''}
           <a class="btn small" href="#/edit/${encodeURIComponent(id)}">Add Amounts</a></div>` : ''}
         ${ingredients.length ? `
           <div class="have-summary">

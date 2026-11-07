@@ -1063,3 +1063,13 @@ main[data-section="fixup"] .topbar { background-color: var(--signal); }
 .fx-guess { font-size: 12px; color: var(--muted); min-width: 0; }
 .filter-select select, .fx-unit { height: 40px; padding: 0 30px 0 10px; font-size: 15px; border-radius: 2px; box-shadow: var(--bevel-inset); }
 .fx-qty { height: 40px; }
+.fx-head { flex-wrap: wrap; }
+.fx-title { min-width: 0; flex: 1 1 180px; }
+.fx-title small { display: block; font-size: 12px; color: var(--muted); }
+a.fx-recipe { color: var(--chrome) !important; font-weight: 700; font-size: 15px; text-decoration: underline !important; text-underline-offset: 3px; }
+a.fx-recipe:hover { color: var(--signal) !important; }
+.fx-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.fx-src svg { width: 14px; height: 14px; }
+.fx-src-text { font-size: 12px; color: var(--muted); }
+.fx-list li { flex-wrap: wrap; }
+.banner.needs { flex-wrap: wrap; }
