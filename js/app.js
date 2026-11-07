@@ -21,7 +21,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '17';
+const APP_VERSION = '18';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -1320,7 +1320,7 @@ function openImport() {
       const parsed = parseRecipeText(new FormData(form).get('text'));
       const f = document.getElementById('recipe-form');
       if (!f) return;
-      for (const k of ['name', 'directions', 'notes']) {
+      for (const k of ['name', 'directions', 'notes', 'source', 'creator']) {
         if (parsed[k] && f.elements[k]) f.elements[k].value = parsed[k];
       }
       // Dropdowns: keep what was pasted even if it isn't one of the usual choices.

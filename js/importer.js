@@ -5,7 +5,7 @@
 // exposes through its public oEmbed endpoint. Parsing is pure (no DOM) so it can be unit tested;
 // fetching is passed in.
 
-import { parseRecipeText } from './ingredients.js';
+import { parseRecipeText, SOURCE_LINE } from './ingredients.js';
 import { parseTranscript, looksLikeTranscript, spokenIngredients, transcriptSentences } from './transcript.js';
 
 // ---------- Links ----------
@@ -358,7 +358,7 @@ export function splitRecipeTexts(text) {
   const starts = headers.map((h, k) => {
     let i = h - 1;
     const floor = k ? headers[k - 1] + 1 : 0;
-    while (i > floor && (!lines[i].trim() || META_LINE.test(lines[i].trim()))) i--;
+    while (i > floor && (!lines[i].trim() || META_LINE.test(lines[i].trim()) || SOURCE_LINE.test(lines[i].trim()))) i--;
     return k === 0 ? 0 : Math.max(floor, i);
   });
   return starts.map((st, k) => lines.slice(st, k + 1 < starts.length ? starts[k + 1] : lines.length).join('\n').trim()).filter(Boolean);
@@ -373,7 +373,7 @@ export function draftsFromText(text, source = '') {
       const t = parseTranscript(chunk);
       return { ...emptyDraft(source), name: t.name || 'Recipe from transcript', ingredients: t.ingredients, directions: t.directions, notes: chunk };
     }
-    return { ...emptyDraft(source), ...p, directions: p.directions.replace(/\n\n/g, '\n') };
+    return { ...emptyDraft(source), ...p, source: p.source || source, creator: p.creator || creatorFromUrl(p.source), directions: p.directions.replace(/\n\n/g, '\n') };
   }).filter(d => d.name && (d.ingredients || d.directions || d.notes));
 }
 

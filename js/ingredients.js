@@ -410,13 +410,22 @@ export function guessAisle(name) {
 
 // ---------- Recipe text import ----------
 
+export const SOURCE_LINE = /^[*_-]*\s*(source|link|url|recipe from|from|creator|by|author|credit)\s*[*_]*\s*:\s*(.+)$/i;
+
 // Splits pasted recipe text (from a website, message, notes app...) into fields.
 export function parseRecipeText(text) {
   const lines = String(text || '').split(/\r?\n/).map(l => l.trim());
-  const out = { name: '', ingredients: [], directions: [], notes: [], servings: '', prepTime: '', cookTime: '' };
+  const out = { name: '', ingredients: [], directions: [], notes: [], servings: '', prepTime: '', cookTime: '', source: '', creator: '' };
   let section = null;
   for (const line of lines) {
     if (!line) continue;
+    // "Source: https://…" fills the Source field; "Creator: @chefjane" / "By: …" the Creator field.
+    const field = line.match(SOURCE_LINE);
+    if (field) {
+      const key = /^(source|link|url|recipe from|from)$/i.test(field[1]) ? 'source' : 'creator';
+      if (!out[key]) out[key] = field[2].trim();
+      continue;
+    }
     const lower = line.toLowerCase().replace(/[:#*]/g, '').trim();
     if (/^(ingredients?|what you('|’)ll need|you('|’)ll need)$/.test(lower)) { section = 'ingredients'; continue; }
     if (/^(directions?|instructions?|method|steps|preparation|how to make( it)?)$/.test(lower)) { section = 'directions'; continue; }
@@ -446,6 +455,8 @@ export function parseRecipeText(text) {
     ingredients: out.ingredients.join('\n'),
     directions: out.directions.join('\n\n'),
     notes: out.notes.join('\n'),
+    source: out.source,
+    creator: out.creator,
   };
 }
 

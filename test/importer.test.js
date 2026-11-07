@@ -240,3 +240,34 @@ test('your own relay is tried first', async () => {
   setCustomRelay('');
   assert.equal(calls[0], 'https://relay.example.workers.dev/?url=https%3A%2F%2Fsite.com%2Fa');
 });
+
+test('Source and Creator lines fill those fields', () => {
+  const text = `Birria Tacos
+Source: https://www.tiktok.com/@tacoqueen/video/123
+Ingredients
+3 lb chuck roast
+12 corn tortillas
+Directions
+Braise the beef 3 hours.
+Notes
+Similar version: https://example.com/birria
+---
+Grandma's Pie
+Source: Grandma's recipe box
+By: Grandma June
+Ingredients
+2 cups flour`;
+  const [a, b] = draftsFromText(text);
+  assert.equal(a.name, 'Birria Tacos');
+  assert.equal(a.source, 'https://www.tiktok.com/@tacoqueen/video/123');
+  assert.equal(a.creator, '@tacoqueen'); // from the TikTok link
+  assert.equal(a.notes, 'Similar version: https://example.com/birria'); // other links stay in Notes
+  assert.equal(b.name, "Grandma's Pie");
+  assert.equal(b.source, "Grandma's recipe box");
+  assert.equal(b.creator, 'Grandma June');
+  // Without a "---", the Source line between the title and Ingredients doesn't break the split.
+  const [c, d] = draftsFromText('Soup\nSource: https://a.com/soup\nIngredients\n1 onion\nSalad\nLink: https://b.com/salad\nIngredients\n1 lettuce');
+  assert.equal(c.name, 'Soup');
+  assert.equal(d.name, 'Salad');
+  assert.equal(d.source, 'https://b.com/salad');
+});
