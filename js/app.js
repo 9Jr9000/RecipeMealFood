@@ -6,6 +6,7 @@ import { renderHealth } from './health-ui.js';
 import { renderCook } from './cook-ui.js';
 import { renderPlan, openPlanRecipe, mealsThisWeek } from './plan-ui.js';
 import { renderCookMode, leaveCookMode, initTimers } from './cookmode-ui.js';
+import { caloriesFor, computeCalories, calorieLabel } from './calorie-cache.js';
 import {
   parseIngredient, parseIngredients, isSectionHeader, formatAmount, formatQty, parseRecipeText, servingsNumber, AISLES,
   normalizeName, UNIT_GROUPS, UNIT_VALUES, FRACTION_OPTIONS, splitQty, joinQty, readQuantity,
@@ -18,7 +19,7 @@ import {
 } from './sync.js';
 
 // Shown in Settings so it's easy to tell which version is running.
-const APP_VERSION = '15';
+const APP_VERSION = '16';
 
 // ---------- Icons ----------
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
@@ -299,6 +300,23 @@ function categoryGroupsInUse() {
   return groups.filter(g => g.items.length);
 }
 function countIn(cat) { return state.recipes.filter(r => (r.categories || []).includes(cat)).length; }
+function showCalories() { return localPref('cardCalories', 'on') === 'on'; }
+function calSortValue(r) {
+  const c = caloriesFor(r);
+  return c && c.ok ? c.kcal : Infinity;
+}
+// Works out calories in the background, then fills them into the cards already on screen.
+function refreshCalories() {
+  if (!showCalories() && ui.sort !== 'calories') return;
+  computeCalories(state.recipes, () => {
+    for (const el of document.querySelectorAll('[data-cal]')) {
+      const r = recipeById(el.dataset.cal);
+      if (r) el.textContent = calorieLabel(caloriesFor(r));
+    }
+  }).then(changed => {
+    if (changed && (ui.sort === 'calories' || route().name === 'recipe') && route().name !== 'cooking') render();
+  });
+}
 function hasFilters() { return Object.keys(ui.filters).length > 0 || ui.needsAmounts; }
 // Cached per ingredients text so the recipe list doesn't re-parse on every keystroke.
 const missingCache = new Map();
@@ -339,6 +357,8 @@ function filteredRecipes() {
     name: (a, b) => a.name.localeCompare(b.name),
     recent: (a, b) => b.created - a.created,
     rating: (a, b) => (b.rating || 0) - (a.rating || 0) || a.name.localeCompare(b.name),
+    // Recipes without a calorie estimate go last.
+    calories: (a, b) => calSortValue(a) - calSortValue(b) || a.name.localeCompare(b.name),
   };
   return list.sort(sorters[ui.sort] || sorters.name);
 }
@@ -361,6 +381,7 @@ function recipeCardsHtml() {
       <div class="body"><h3>${esc(r.name)}</h3>
         ${r.creator ? `<div class="by">${esc(r.creator)}</div>` : ''}
         <div class="meta">${stars(r.rating)}${time ? `<span>${esc(time)}</span>` : ''}</div>
+        ${showCalories() ? `<div class="card-cal" data-cal="${esc(r.id)}">${esc(calorieLabel(caloriesFor(r)))}</div>` : ''}
         ${missingFor(r) ? `<span class="needs-badge" title="${missingFor(r)} ingredient${missingFor(r) === 1 ? ' has' : 's have'} no amount">Needs amounts</span>` : ''}
       </div></a>`;
   }).join('')}</div>`;
@@ -402,9 +423,11 @@ function viewRecipes() {
           <option value="name" ${ui.sort === 'name' ? 'selected' : ''}>Name</option>
           <option value="recent" ${ui.sort === 'recent' ? 'selected' : ''}>Recently Added</option>
           <option value="rating" ${ui.sort === 'rating' ? 'selected' : ''}>Rating</option>
+          <option value="calories" ${ui.sort === 'calories' ? 'selected' : ''}>Calories (Low to High)</option>
         </select></label></div>` : ''}
       <div id="recipe-results">${recipeCardsHtml()}</div>
     </div>`;
+  refreshCalories();
 }
 
 // Recipe detail
@@ -492,6 +515,11 @@ function viewRecipe(id) {
           ${r.servings ? `<div class="fact">Servings<b>${esc(r.servings)}</b></div>` : ''}
           ${r.prepTime ? `<div class="fact">Prep time<b>${esc(r.prepTime)}</b></div>` : ''}
           ${r.cookTime ? `<div class="fact">Cook time<b>${esc(r.cookTime)}</b></div>` : ''}
+          ${(() => {
+            const c = caloriesFor(r);
+            if (!c || !c.ok) return '';
+            return `<a class="fact cal-fact" href="#/health/calories/${encodeURIComponent(id)}" title="Estimated from USDA data — ${c.counted} of ${c.lines} ingredients counted. Tap for details.">${c.servings ? 'Calories / serving' : 'Calories (total)'}<b>~${(c.servings ? c.kcal : c.total).toLocaleString()}</b>${c.servings ? `<small>${c.protein}g protein · ${c.carbs}g carbs · ${c.fat}g fat</small>` : ''}</a>`;
+          })()}
         </div>
         ${r.creator ? `<div class="creator">by ${creatorLink(r) ? `<a href="${esc(creatorLink(r))}" target="_blank" rel="noopener noreferrer">${esc(r.creator)}</a>` : esc(r.creator)}</div>` : ''}
         ${r.source ? `<div class="source">${source ? `<a href="${esc(source)}" target="_blank" rel="noopener noreferrer">${esc(new URL(source).hostname.replace(/^www\./, ''))}</a>` : esc(r.source)}</div>` : ''}
@@ -544,7 +572,7 @@ function viewRecipe(id) {
       </section>
       ${r.notes ? `<section class="notes-sec" ${tab !== 'notes' ? 'hidden' : ''}><h2>Notes</h2><div class="notes">${esc(r.notes)}</div></section>` : ''}
     </div>
-    </div>`;
+    </div>`;  if (!caloriesFor(r)) refreshCalories();
 }
 
 // Recipe editor
@@ -876,6 +904,11 @@ function viewSettings() {
           <button class="btn" data-action="export">Export Backup</button>
           <label class="btn" style="cursor:pointer">Import Backup<input type="file" accept="application/json,.json" id="import-input" hidden></label>
         </div>
+      </div>
+      <div class="settings-card">
+        <h2>Recipe Cards</h2>
+        <label class="cook-toggle"><input type="checkbox" id="card-calories" ${showCalories() ? 'checked' : ''}> Show estimated calories on recipe cards</label>
+        <p class="hint" style="margin-top:6px">Calories are estimated from USDA data for the ingredients that have amounts, per serving when the recipe lists servings. They’re approximate — tap Nutrition on a recipe to check the matches.</p>
       </div>
       <div class="settings-card">
         <h2>Link Import Relay</h2>
@@ -1724,6 +1757,10 @@ document.addEventListener('change', async e => {
     ui.sort = e.target.value;
     setPref('sort', ui.sort);
     document.getElementById('recipe-results').innerHTML = recipeCardsHtml();
+    refreshCalories();
+  } else if (e.target.id === 'card-calories') {
+    setPref('cardCalories', e.target.checked ? 'on' : 'off');
+    toast(e.target.checked ? 'Calories will show on recipe cards' : 'Calories hidden on recipe cards');
   } else if (e.target.id === 'photo-input' && e.target.files[0]) {
     try {
       editorPhoto = await resizeImage(e.target.files[0]);

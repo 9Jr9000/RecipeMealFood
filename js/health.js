@@ -1,7 +1,7 @@
 // Health & nutrition calculators. Pure functions (no DOM) so they can be unit tested.
 // Nutrition data: USDA National Nutrient Database for Standard Reference, Release 28 (data/nutrition.json).
 
-import { parseIngredients, ingredientAmounts, normalizeName } from './ingredients.js';
+import { parseIngredients, ingredientAmounts, normalizeName, servingsNumber, totalAmount } from './ingredients.js';
 
 // ---------- Units ----------
 export const LB_PER_KG = 2.20462;
@@ -319,6 +319,8 @@ function volumePortion(food) {
   return null;
 }
 
+const COUNT_G = { clove: 3, stick: 113, pinch: 0.36, dash: 0.6 };
+
 // Converts an amount of a food to grams. Returns { grams, approx }; grams is null when unknown.
 export function toGrams(food, qty, unit) {
   if (qty === null || qty === undefined || Number.isNaN(qty)) return { grams: null, approx: false };
@@ -339,7 +341,9 @@ export function toGrams(food, qty, unit) {
   }
   // Other recipe units (clove, slice, can...): match a household measure with that word.
   const p = (food?.portions || []).find(([, d]) => new RegExp(`\\b${unit}`, 'i').test(d));
-  return p ? { grams: qty * p[0], approx: false } : { grams: null, approx: false };
+  if (p) return { grams: qty * p[0], approx: false };
+  // Common kitchen counts USDA doesn't list for every food.
+  return COUNT_G[unit] ? { grams: qty * COUNT_G[unit], approx: true } : { grams: null, approx: false };
 }
 
 export function nutrientsFor(food, grams) {
@@ -371,6 +375,37 @@ export function rowsFromRecipe(foods, recipe) {
     rows.push({ text: p.raw, foodId: food ? food.id : null, qty, unit: unit || (qty !== null ? null : 'g') });
   }
   return rows;
+}
+
+// Approximate calories (and protein/carbs/fat) for a whole recipe and per serving.
+// Lines without an amount ("salt to taste") or without a matching food aren't counted; `counted`
+// and `lines` say how much of the recipe the estimate covers. `matches` caches name -> food.
+export function recipeCalories(foods, recipe, matches = new Map()) {
+  let counted = 0, lines = 0;
+  const totals = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+  for (const p of parseIngredients(recipe.ingredients || '')) {
+    if (p.header) continue;
+    lines++;
+    const amount = totalAmount(ingredientAmounts(p)) || ingredientAmounts(p)[0];
+    if (!amount || amount.qty === null || amount.qty === undefined) continue;
+    let food = matches.get(p.key);
+    if (food === undefined) { food = matchFood(foods, p.name) || null; matches.set(p.key, food); }
+    if (!food) continue;
+    const { grams } = toGrams(food, amount.qty, amount.unit || null);
+    if (grams === null || !(grams >= 0)) continue;
+    const n = nutrientsFor(food, grams);
+    for (const k of Object.keys(totals)) totals[k] += n[k] || 0;
+    counted++;
+  }
+  const servings = servingsNumber(recipe.servings) || null;
+  const per = servings && servings > 0 ? servings : 1;
+  const perServing = {};
+  for (const [k, v] of Object.entries(totals)) perServing[k] = v / per;
+  return {
+    total: totals, perServing, servings, counted, lines,
+    // Only worth showing when most of the recipe was counted.
+    reliable: counted >= 2 && counted / Math.max(1, lines) >= 0.5,
+  };
 }
 
 // ---------- Ingredient swaps ----------

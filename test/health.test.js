@@ -97,3 +97,15 @@ test('auto-match review (common recipe ingredients)', () => {
   });
   console.log(lines.join('\n'));
 });
+
+import { recipeCalories } from '../js/health.js';
+
+test('recipe calories per serving', () => {
+  const pasta = recipeCalories(foods, { servings: '4', ingredients: '1 lb spaghetti\n4 tbsp unsalted butter\n6 cloves garlic, minced\n1/2 cup grated parmesan\nSalt to taste' });
+  assert.equal(pasta.servings, 4);
+  assert.equal(pasta.counted, 4); // salt to taste has no amount
+  assert.ok(pasta.reliable);
+  assert.ok(pasta.perServing.kcal > 500 && pasta.perServing.kcal < 650, String(pasta.perServing.kcal));
+  // Mostly unmeasured ingredients -> not reliable enough to show
+  assert.ok(!recipeCalories(foods, { ingredients: 'chicken\nrice\n1 onion' }).reliable);
+});

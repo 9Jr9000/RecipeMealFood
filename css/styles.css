@@ -969,3 +969,8 @@ body.has-timers .toast { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bott
 }
 .timer-btn.stop { min-width: 80px; color: #fff; background: linear-gradient(#ffaa52, var(--signal)); border-color: #b05e09; font-size: 14px; text-transform: uppercase; }
 .cm-timers .btn { color: var(--carbon); background: linear-gradient(#f6c560, var(--amber)); border-color: #a26f12; }
+
+/* Calories on cards */
+.card-cal { font: 700 12px var(--font); color: var(--amber); margin-top: 3px; min-height: 12px; }
+.cal-fact { text-decoration: none; color: var(--ink-soft); }
+.cal-fact small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; margin-top: 1px; }

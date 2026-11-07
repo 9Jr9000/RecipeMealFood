@@ -50,7 +50,7 @@ let swapRecipe = '';
 // ---------- Nutrition data (loaded on first use) ----------
 let foods = null;
 let foodsPromise = null;
-function ensureFoods() {
+export function ensureFoods() {
   if (foods) return Promise.resolve(foods);
   if (!foodsPromise) {
     foodsPromise = fetch('data/nutrition.json')
